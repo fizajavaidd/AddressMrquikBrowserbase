@@ -186,8 +186,41 @@ function buildSteps(I: any): StepDef[] {
     step("Navigate to login page").goto("https://misterquik.sera.tech/admins/login").expectVisible('input[type="email"], input[name="email"]').build(),
     step("Fill email").fill('input[type="email"], input[name="email"]', I.stratablueEmail).build(),
     step("Fill password").fill('input[type="password"]', I.stratabluePassword).build(),
-    step("Click login button").click('input[type="submit"], button[type="submit"]').build(),
-    step("Wait for dashboard").waitFor("nav, .dashboard, .main-navigation", "visible").expectUrl(/^(?!.*\/login)/).build(),
+    step("Wait before login click").wait(1000).build(),
+    step("Click login button").custom(async (page: any) => {
+      // Try multiple selectors — Sera's button may not have type="submit"
+      const selectors = [
+        'button:has-text("Sign In")',
+        'button:has-text("Login")',
+        'button:has-text("Log In")',
+        'input[type="submit"]',
+        'button[type="submit"]',
+        '.btn-primary',
+        'button.btn',
+      ];
+      for (const sel of selectors) {
+        const btn = page.locator(sel).first();
+        if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
+          await btn.click();
+          console.log(`    ℹ️  Clicked login button with selector: "${sel}"`);
+          return;
+        }
+      }
+      throw new Error("Could not find login button with any known selector");
+    }).build(),
+    step("Wait for page to load after login").wait(5000).build(),
+    step("Wait for dashboard").custom(async (page: any) => {
+      // Wait up to 30s for URL to change away from /login
+      for (let i = 0; i < 30; i++) {
+        const url = page.url();
+        if (!url.includes("/login")) {
+          console.log(`    ℹ️  Redirected to: ${url}`);
+          return;
+        }
+        await page.waitForTimeout(1000);
+      }
+      throw new Error("Still on login page after 30 seconds — login may have failed. Check credentials.");
+    }).build(),
 
     // FIND CUSTOMER
     step("Navigate to customers page").goto("https://misterquik.sera.tech/customers").expectVisible("table, .customers-list").build(),
