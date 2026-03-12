@@ -242,7 +242,7 @@ function buildSteps(I: any): Step[] {
     {
       name: "Navigate to login page",
       async run(page) {
-        await page.goto("https://misterquik.sera.tech/admins/login", { waitUntil: "domcontentloaded", timeout: 30000 });
+        await page.goto("https://misterquik.sera.tech/admins/login", { waitUntil: "domcontentloaded", timeout: 300000 });
         await waitUntilVisible(page, 'input[type="email"], input[name="email"]', 150000);
       },
     },
@@ -306,7 +306,7 @@ function buildSteps(I: any): Step[] {
     {
       name: "Navigate to customers page",
       async run(page) {
-        await page.goto("https://misterquik.sera.tech/customers", { waitUntil: "domcontentloaded", timeout: 30000 });
+        await page.goto("https://misterquik.sera.tech/customers", { waitUntil: "domcontentloaded", timeout: 300000 });
         await waitUntilVisible(page, "table, .customers-list", 150000);
       },
     },
@@ -393,7 +393,7 @@ function buildSteps(I: any): Step[] {
               try {
                 await page.goto(`https://misterquik.sera.tech/customers/${idMatch[1]}`, {
                   waitUntil: "domcontentloaded",
-                  timeout: 60000,
+                  timeout: 600000,
                 });
               } catch {
                 console.log(`    ℹ️  goto timed out — waiting for page to settle`);
@@ -443,7 +443,7 @@ function buildSteps(I: any): Step[] {
               try {
                 await page.goto(`https://misterquik.sera.tech/customers/${idMatch[1]}`, {
                   waitUntil: "domcontentloaded",
-                  timeout: 60000,
+                  timeout: 600000,
                 });
               } catch {
                 console.log(`    ℹ️  goto timed out — waiting for page to settle`);
@@ -498,7 +498,7 @@ function buildSteps(I: any): Step[] {
       async run(page) {
         await page.goto("https://misterquik.sera.tech/customers/new", {
           waitUntil: "domcontentloaded",
-          timeout: 30000,
+          timeout: 300000,
         });
         await waitUntilVisible(page, 'input[data-cy="first-name"], input[name*="first" i]', 10000);
       },
