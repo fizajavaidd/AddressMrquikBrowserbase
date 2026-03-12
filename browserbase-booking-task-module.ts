@@ -242,7 +242,7 @@ function buildSteps(I: any): Step[] {
     {
       name: "Navigate to login page",
       async run(page) {
-        await page.goto("https://misterquik.sera.tech/admins/login", { waitUntil: "domcontentloaded", timeout: 100000 });
+        await page.goto("https://misterquik.sera.tech/admins/login", { waitUntil: "domcontentloaded", timeout: 30000 });
         await waitUntilVisible(page, 'input[type="email"], input[name="email"]', 15000);
       },
     },
@@ -306,7 +306,7 @@ function buildSteps(I: any): Step[] {
     {
       name: "Navigate to customers page",
       async run(page) {
-        await page.goto("https://misterquik.sera.tech/customers", { waitUntil: "domcontentloaded", timeout: 100000 });
+        await page.goto("https://misterquik.sera.tech/customers", { waitUntil: "domcontentloaded", timeout: 30000 });
         await waitUntilVisible(page, "table, .customers-list", 15000);
       },
     },
@@ -336,15 +336,19 @@ function buildSteps(I: any): Step[] {
             text.includes(I.phone)
           ) {
             console.log(`    ℹ️  Match at row ${i}`);
-            // Extract customer ID from row text (leading digits)
             const idMatch = text.match(/^(\d+)/);
             if (idMatch) {
-              await page.goto(`https://misterquik.sera.tech/customers/${idMatch[1]}`, {
-                waitUntil: "domcontentloaded",
-                timeout: 100000,
-              });
+              try {
+                await page.goto(`https://misterquik.sera.tech/customers/${idMatch[1]}`, {
+                  waitUntil: "domcontentloaded",
+                  timeout: 60000,
+                });
+              } catch {
+                // waitForMainLoadState can time out on slow SPAs — ignore and wait
+                console.log(`    ℹ️  goto timed out — waiting for page to settle`);
+                await page.waitForTimeout(5000);
+              }
             } else {
-              // Fallback: click first link in that row via evaluate
               await clickNth(page, "table tbody tr a", i);
             }
             await page.waitForTimeout(5000);
@@ -386,10 +390,15 @@ function buildSteps(I: any): Step[] {
           ) {
             const idMatch = text.match(/^(\d+)/);
             if (idMatch) {
-              await page.goto(`https://misterquik.sera.tech/customers/${idMatch[1]}`, {
-                waitUntil: "domcontentloaded",
-                timeout: 100000,
-              });
+              try {
+                await page.goto(`https://misterquik.sera.tech/customers/${idMatch[1]}`, {
+                  waitUntil: "domcontentloaded",
+                  timeout: 60000,
+                });
+              } catch {
+                console.log(`    ℹ️  goto timed out — waiting for page to settle`);
+                await page.waitForTimeout(5000);
+              }
             } else {
               await clickNth(page, "table tbody tr a", i);
             }
@@ -431,10 +440,15 @@ function buildSteps(I: any): Step[] {
           ) {
             const idMatch = text.match(/^(\d+)/);
             if (idMatch) {
-              await page.goto(`https://misterquik.sera.tech/customers/${idMatch[1]}`, {
-                waitUntil: "domcontentloaded",
-                timeout: 30000,
-              });
+              try {
+                await page.goto(`https://misterquik.sera.tech/customers/${idMatch[1]}`, {
+                  waitUntil: "domcontentloaded",
+                  timeout: 60000,
+                });
+              } catch {
+                console.log(`    ℹ️  goto timed out — waiting for page to settle`);
+                await page.waitForTimeout(5000);
+              }
             } else {
               await clickNth(page, "table tbody tr a", i);
             }
@@ -484,7 +498,7 @@ function buildSteps(I: any): Step[] {
       async run(page) {
         await page.goto("https://misterquik.sera.tech/customers/new", {
           waitUntil: "domcontentloaded",
-          timeout: 100000,
+          timeout: 30000,
         });
         await waitUntilVisible(page, 'input[data-cy="first-name"], input[name*="first" i]', 10000);
       },
@@ -783,29 +797,61 @@ function buildSteps(I: any): Step[] {
       name: "Find newly added address and click Schedule",
       skipIf: (_, c) => newAddrAdded(c),
       async run(page, ctx) {
-        await waitUntilVisible(page, ".addresses-cont", 10000);
-        await page.waitForTimeout(1000);
+        // Wait for page to settle after modal close — addresses-cont may take a moment to re-render
+        await page.waitForTimeout(3000);
+        await waitUntilVisible(page, ".addresses-cont, .address-card", 15000);
+        await page.waitForTimeout(1500);
 
         const raw = ((ctx.actualStreetAddress || I.serviceAddress) as string).split(",")[0].trim();
         const sn = extractStreetNumber(raw);
 
-        // Fill search
-        const siSel = 'sera-input[data-cy="address-search"] input';
-        const siVisible = await page.locator(siSel).first().isVisible();
-        if (siVisible) {
-          await page.locator(siSel).first().fill(sn || raw);
+        // Try to use the search input — but treat it as optional since it may not be available
+        // after the add-address modal closes and the page re-renders
+        const searchSelectors = [
+          '[data-cy="address-search"] input',
+          'sera-input[data-cy="address-search"] input',
+          'input[placeholder*="Search" i]',
+          'input[placeholder*="Address" i]',
+        ];
+        const siSel = await firstVisible(page, searchSelectors, 2000);
+        if (siSel) {
+          try {
+            await page.locator(siSel).first().fill(sn || raw);
+            console.log(`    ℹ️  Searched for "${sn || raw}" using "${siSel}"`);
+            await page.waitForTimeout(1500);
+          } catch {
+            console.log(`    ⚠️  Search fill failed — scanning all cards without filter`);
+          }
+        } else {
+          console.log(`    ℹ️  No search input found — scanning all cards`);
+        }
+
+        // Scan all address cards — try up to 3 times with a short wait between
+        let matchedIndex = -1;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const cardTexts: string[] = await page.evaluate(() =>
+            Array.from(document.querySelectorAll(".address-card")).map(el => el.textContent || "")
+          );
+          console.log(`    ℹ️  ${cardTexts.length} card(s) on attempt ${attempt + 1}`);
+
+          matchedIndex = cardTexts.findIndex(t => addressesMatch(t, raw));
+
+          // Also accept: only one card and it contains the street number
+          if (matchedIndex === -1 && cardTexts.length === 1 && sn && cardTexts[0].includes(sn)) {
+            matchedIndex = 0;
+          }
+
+          // Also accept: only one card (newly added — no other cards existed before)
+          if (matchedIndex === -1 && cardTexts.length === 1) {
+            console.log(`    ℹ️  Only 1 card found — assuming it's the newly added address`);
+            matchedIndex = 0;
+          }
+
+          if (matchedIndex !== -1) break;
           await page.waitForTimeout(1500);
         }
 
-        const cardTexts: string[] = await page.evaluate(() =>
-          Array.from(document.querySelectorAll(".address-card")).map(el => el.textContent || "")
-        );
-
-        let matchedIndex = cardTexts.findIndex(t => addressesMatch(t, raw));
-        if (matchedIndex === -1 && cardTexts.length === 1 && sn && cardTexts[0].includes(sn)) {
-          matchedIndex = 0;
-        }
-        if (matchedIndex === -1) throw new Error(`Could not find address "${raw}" in cards`);
+        if (matchedIndex === -1) throw new Error(`Could not find address "${raw}" in any card`);
 
         const clicked = await page.evaluate((idx: number) => {
           const cards = Array.from(document.querySelectorAll(".address-card"));
@@ -892,7 +938,7 @@ function buildSteps(I: any): Step[] {
     },
 
     // =========================================================================
-    // SELECT DATE — try AI agent first, fall back to DOM click on quota error
+    // SELECT DATE — AI agent with sufficient step budget for any month distance
     // =========================================================================
     {
       name: "Select date on calendar",
@@ -958,7 +1004,7 @@ function buildSteps(I: any): Step[] {
           await page.waitForTimeout(1000);
         };
 
-        // --- Try AI agent ---
+        // --- Try AI agent with maxSteps: 30 to handle any month distance ---
         try {
           const agent = stagehand.agent({
             mode: "cua",
