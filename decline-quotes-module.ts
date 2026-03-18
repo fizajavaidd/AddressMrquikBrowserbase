@@ -1,10 +1,9 @@
 // decline-quotes-module.ts
-// Logs into Sera, navigates to filtered appointments page,
-// goes to a specific page number, then for each job:
-//   - Opens the job
-//   - Goes to Quotes tab
-//   - Declines all open quotes with reason "Briq Denied Quote"
-//   - Returns to the appointment list
+// For each appointment on a filtered page:
+//   1. Gets the JOB ID from the table
+//   2. Opens job in Quotes tab via direct URL
+//   3. Finds all open quotes and declines them
+//   4. Moves to next job
 
 import { Stagehand } from "@browserbasehq/stagehand";
 
@@ -35,13 +34,13 @@ export async function declineQuotesOnPage(input: {
   let jobsProcessed = 0;
   let quotesDeclined = 0;
 
-  // Helper: navigate with timeout protection
-  async function safeGoto(page: any, url: string) {
+  async function safeGoto(page: any, url: string, waitMs: number = 5000) {
     try {
       await page.goto(url, { waitUntil: "domcontentloaded", timeoutMs: 60000 });
-    } catch (e: any) {
-      console.log(`    ⚠️  Page load timeout for ${url.substring(0, 80)}... — continuing anyway`);
+    } catch {
+      console.log(`    ⚠️  Page load timeout — continuing`);
     }
+    await page.waitForTimeout(waitMs);
   }
 
   try {
@@ -53,8 +52,7 @@ export async function declineQuotesOnPage(input: {
 
     // ==================== STEP 1: LOGIN ====================
     console.log("  → Login");
-    await safeGoto(page, "https://misterquik.sera.tech/admins/login");
-    await page.waitForTimeout(3000);
+    await safeGoto(page, "https://misterquik.sera.tech/admins/login", 3000);
     await page.locator('input[type="email"]').first().fill(EMAIL);
     await page.locator('input[type="password"]').first().fill(PASSWORD);
     await page.waitForTimeout(1000);
@@ -75,9 +73,8 @@ export async function declineQuotesOnPage(input: {
 
     // ==================== STEP 2: GO TO FILTERED APPOINTMENTS ====================
     const appointmentsUrl = `https://misterquik.sera.tech/reports/appointments?jobs-table_scheduled_time=${encodeURIComponent(dateFilter)}&jobs-table_status=completed`;
-    console.log(`  → Navigating to appointments: ${appointmentsUrl}`);
-    await safeGoto(page, appointmentsUrl);
-    await page.waitForTimeout(15000);
+    console.log(`  → Navigating to appointments`);
+    await safeGoto(page, appointmentsUrl, 15000);
     console.log(`    ✅ On: ${page.url()}`);
 
     // ==================== STEP 3: NAVIGATE TO REQUESTED PAGE ====================
@@ -86,8 +83,7 @@ export async function declineQuotesOnPage(input: {
       const clicked = await page.evaluate((pn: number) => {
         const links = document.querySelectorAll('ul.pagination a.page-link, .dt-paging-button a, .page-item a');
         for (const link of links) {
-          const text = link.textContent?.trim();
-          if (text === String(pn)) {
+          if (link.textContent?.trim() === String(pn)) {
             (link as HTMLElement).click();
             return true;
           }
@@ -96,43 +92,79 @@ export async function declineQuotesOnPage(input: {
       }, pageNumber);
 
       if (!clicked) {
-        console.log(`    ⚠️  Could not click page ${pageNumber} button, trying AI...`);
         await stagehand.act(`click on page number ${pageNumber} in the pagination at the bottom`);
       }
-
       await page.waitForTimeout(5000);
       console.log(`    ✅ On page ${pageNumber}`);
     }
 
-    // ==================== STEP 4: COLLECT JOB IDS ====================
-    console.log("  → Collecting job IDs");
+    // ==================== STEP 4: COLLECT JOB IDS FROM TABLE ====================
+    console.log("  → Collecting JOB IDs from table");
 
+    // The table has APPOINTMENT and JOB columns. We need JOB IDs.
+    // JOB column contains the job ID that maps to /jobs/{id}
     const jobIds: string[] = await page.evaluate(() => {
       const ids: string[] = [];
-      const rows = document.querySelectorAll('table tbody tr');
+      const rows = document.querySelectorAll('table tbody tr, tbody.table-data tr');
       for (const row of rows) {
-        const firstCell = row.querySelector('td:first-child');
-        if (firstCell) {
-          const link = firstCell.querySelector('a');
-          const text = (link?.textContent || firstCell.textContent || "").trim();
-          const idMatch = text.match(/(\d{5,})/);
-          if (idMatch) ids.push(idMatch[1]);
+        const cells = row.querySelectorAll('td');
+        // Find the JOB column — it's typically the one with a link to /jobs/
+        for (const cell of cells) {
+          const link = cell.querySelector('a[href*="/jobs/"]');
+          if (link) {
+            const href = link.getAttribute('href') || '';
+            const match = href.match(/\/jobs\/(\d+)/);
+            if (match) {
+              const jobId = match[1];
+              if (!ids.includes(jobId)) ids.push(jobId);
+            }
+          }
+        }
+        // Fallback: look for job ID in text that has appointment_id param
+        if (ids.length === 0 || ids.length < rows.length) {
+          for (const cell of cells) {
+            const links = cell.querySelectorAll('a');
+            for (const a of links) {
+              const href = a.getAttribute('href') || '';
+              if (href.includes('appointment_id=')) {
+                const jm = href.match(/\/jobs\/(\d+)/);
+                if (jm && !ids.includes(jm[1])) ids.push(jm[1]);
+              }
+            }
+          }
         }
       }
       return ids;
     });
 
-    console.log(`    ℹ️  Found ${jobIds.length} jobs: ${jobIds.join(", ")}`);
+    console.log(`    ℹ️  Found ${jobIds.length} jobs: ${jobIds.slice(0, 10).join(", ")}${jobIds.length > 10 ? "..." : ""}`);
 
     if (jobIds.length === 0) {
-      await stagehand.close();
-      return {
-        status: "COMPLETED",
-        result: `Page ${pageNumber}: No jobs found`,
-        jobsProcessed: 0,
-        quotesDeclined: 0,
-        sessionUrl,
-      };
+      // Fallback: extract from the APPOINTMENT column links
+      console.log("    ⚠️  No job IDs found via href, trying appointment links...");
+      const appointmentIds: string[] = await page.evaluate(() => {
+        const ids: string[] = [];
+        const links = document.querySelectorAll('tbody a[href*="/jobs/"]');
+        for (const link of links) {
+          const href = link.getAttribute('href') || '';
+          const match = href.match(/\/jobs\/(\d+)/);
+          if (match && !ids.includes(match[1])) ids.push(match[1]);
+        }
+        return ids;
+      });
+
+      if (appointmentIds.length === 0) {
+        await stagehand.close();
+        return {
+          status: "COMPLETED",
+          result: `Page ${pageNumber}: No jobs found`,
+          jobsProcessed: 0,
+          quotesDeclined: 0,
+          sessionUrl,
+        };
+      }
+      jobIds.push(...appointmentIds);
+      console.log(`    ℹ️  Found ${jobIds.length} via fallback: ${jobIds.slice(0, 10).join(", ")}`);
     }
 
     // ==================== STEP 5: PROCESS EACH JOB ====================
@@ -140,125 +172,243 @@ export async function declineQuotesOnPage(input: {
       console.log(`\n  → Processing job ${jobId}`);
 
       try {
-        // Navigate to the job page
-        const jobUrl = `https://misterquik.sera.tech/jobs/${jobId}`;
-        await safeGoto(page, jobUrl);
-        await page.waitForTimeout(5000);
+        // Open job Quotes tab directly in a new tab
+        const jobQuotesUrl = `https://misterquik.sera.tech/jobs/${jobId}?tab=jp_Quotes`;
 
-        // Click on Quotes tab
-        console.log(`    → Clicking Quotes tab`);
-        const quotesTabClicked = await page.evaluate(() => {
-          const tabs = document.querySelectorAll('a, button, [role="tab"], .nav-link, .tab');
-          for (const tab of tabs) {
-            if (tab.textContent?.trim().toLowerCase().includes("quote")) {
-              (tab as HTMLElement).click();
-              return true;
-            }
-          }
-          return false;
-        });
-
-        if (!quotesTabClicked) {
-          console.log(`    ⚠️  Quotes tab not found via DOM, trying AI...`);
-          await stagehand.act("click on the Quotes tab in the centre of the page");
+        // Open new tab
+        const newPage = await stagehand.context.newPage();
+        try {
+          await newPage.goto(jobQuotesUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+        } catch {
+          console.log(`    ⚠️  Job page load timeout — continuing`);
         }
+        await newPage.waitForTimeout(5000);
 
-        await page.waitForTimeout(3000);
+        console.log(`    ✅ Opened Quotes tab for job ${jobId}`);
 
-        // Find and decline all open quotes
-        console.log(`    → Looking for open quotes`);
-
-        let hasMoreQuotes = true;
+        // Check if Open section exists and has quotes
+        let hasMoreOpenQuotes = true;
         let quotesOnThisJob = 0;
+        const MAX_QUOTES_PER_JOB = 20; // safety limit
 
-        while (hasMoreQuotes) {
-          // Check if there are any open quotes visible
-          const hasOpenQuote = await page.evaluate(() => {
-            const text = document.body.innerText.toLowerCase();
-            const hasOpen = text.includes("open") &&
-              (document.querySelector('[class*="open"]') !== null ||
-               document.querySelector('[data-cy*="quote"]') !== null ||
-               text.includes("quote"));
-            const dots = document.querySelectorAll('[class*="dots"], [class*="menu"], [class*="action"], .dropdown-toggle, .btn-icon, [data-toggle="dropdown"]');
-            return dots.length > 0 && hasOpen;
-          });
-
-          if (!hasOpenQuote && quotesOnThisJob === 0) {
-            try {
-              const extracted = await stagehand.extract(
-                "Are there any open quotes visible on this page under the Open section? Answer yes or no."
-              );
-              const answer = typeof extracted === "string" ? extracted : JSON.stringify(extracted);
-              if (answer.toLowerCase().includes("no")) {
-                console.log(`    ℹ️  No open quotes on job ${jobId}`);
-                hasMoreQuotes = false;
+        while (hasMoreOpenQuotes && quotesOnThisJob < MAX_QUOTES_PER_JOB) {
+          // Find open quotes by looking for the "Open" section header and quote cards under it
+          const openQuoteInfo = await newPage.evaluate(() => {
+            // Find the "Open" group header
+            const headers = document.querySelectorAll('.group-header, [class*="quote-group"]');
+            let openSection: Element | null = null;
+            for (const h of headers) {
+              if (h.textContent?.trim().toLowerCase().startsWith('open')) {
+                openSection = h.closest('.quote-group') || h.parentElement;
                 break;
               }
+            }
+
+            if (!openSection) {
+              // Try finding by text content
+              const allDivs = document.querySelectorAll('div');
+              for (const div of allDivs) {
+                const directText = Array.from(div.childNodes)
+                  .filter(n => n.nodeType === 3)
+                  .map(n => n.textContent?.trim())
+                  .join('');
+                if (directText === 'Open') {
+                  openSection = div.closest('[class*="quote-group"]') || div.parentElement?.parentElement;
+                  break;
+                }
+              }
+            }
+
+            if (!openSection) return { hasOpen: false, count: 0 };
+
+            // Count quote cards with three-dot menus in the Open section
+            const actionTriggers = openSection.querySelectorAll('[data-cy="action-trigger-icon"], .action-trigger, .fa-ellipsis-v');
+            return { hasOpen: actionTriggers.length > 0, count: actionTriggers.length };
+          });
+
+          if (!openQuoteInfo.hasOpen) {
+            if (quotesOnThisJob === 0) {
+              console.log(`    ℹ️  No open quotes on job ${jobId}`);
+            }
+            hasMoreOpenQuotes = false;
+            break;
+          }
+
+          console.log(`    ℹ️  Found ${openQuoteInfo.count} open quote(s)`);
+
+          // Click the three dots on the FIRST open quote
+          console.log(`    → Clicking three dots on open quote`);
+          const dotsClicked = await newPage.evaluate(() => {
+            // Find the Open section
+            const headers = document.querySelectorAll('.group-header, [class*="quote-group"]');
+            let openSection: Element | null = null;
+            for (const h of headers) {
+              if (h.textContent?.trim().toLowerCase().startsWith('open')) {
+                openSection = h.closest('.quote-group') || h.parentElement;
+                break;
+              }
+            }
+            if (!openSection) {
+              const allDivs = document.querySelectorAll('div');
+              for (const div of allDivs) {
+                const directText = Array.from(div.childNodes)
+                  .filter(n => n.nodeType === 3)
+                  .map(n => n.textContent?.trim())
+                  .join('');
+                if (directText === 'Open') {
+                  openSection = div.closest('[class*="quote-group"]') || div.parentElement?.parentElement;
+                  break;
+                }
+              }
+            }
+            if (!openSection) return false;
+
+            // Find first action trigger icon in the Open section
+            const trigger = openSection.querySelector('[data-cy="action-trigger-icon"], .action-trigger, .fa-ellipsis-v, i.fa-ellipsis-v');
+            if (trigger) {
+              (trigger as HTMLElement).click();
+              return true;
+            }
+
+            // Fallback: find the wrapper and click it
+            const wrapper = openSection.querySelector('.actions-menu-wrapper, .action-menu-cont');
+            if (wrapper) {
+              (wrapper as HTMLElement).click();
+              return true;
+            }
+
+            return false;
+          });
+
+          if (!dotsClicked) {
+            console.log(`    ⚠️  Could not click three dots via DOM, trying AI...`);
+            try {
+              await stagehand.act("click the three dots menu icon next to the first quote under the Open section");
             } catch {
-              console.log(`    ℹ️  Could not determine if quotes exist on job ${jobId}`);
-              hasMoreQuotes = false;
+              console.log(`    ⚠️  AI also failed to click dots — skipping job`);
+              hasMoreOpenQuotes = false;
               break;
             }
           }
 
-          if (!hasOpenQuote && quotesOnThisJob > 0) {
-            hasMoreQuotes = false;
+          await newPage.waitForTimeout(1500);
+
+          // Click "Decline Quote" from the dropdown menu
+          console.log(`    → Clicking Decline Quote option`);
+          const declineClicked = await newPage.evaluate(() => {
+            // Look for menu items with data-cy="actions-menu-action"
+            const menuItems = document.querySelectorAll('[data-cy="actions-menu-action"], .actions-menu-action, .menu-item');
+            for (const item of menuItems) {
+              if (item.textContent?.trim().toLowerCase().includes('decline quote')) {
+                (item as HTMLElement).click();
+                return true;
+              }
+            }
+            // Fallback: look for any visible span/element with "Decline Quote"
+            const spans = document.querySelectorAll('span, a, li');
+            for (const s of spans) {
+              if (s.textContent?.trim() === 'Decline Quote' && (s as HTMLElement).offsetParent !== null) {
+                (s as HTMLElement).click();
+                return true;
+              }
+            }
+            return false;
+          });
+
+          if (!declineClicked) {
+            console.log(`    ⚠️  Could not click Decline Quote — skipping`);
+            hasMoreOpenQuotes = false;
             break;
           }
 
-          // Click the three dots menu on the first open quote
-          console.log(`    → Clicking three dots menu`);
-          try {
-            await stagehand.act("click the three dots menu button on the right side of the first open quote");
-            await page.waitForTimeout(1500);
+          await newPage.waitForTimeout(2000);
 
-            // Click "Decline Quote" from the dropdown
-            console.log(`    → Clicking Decline Quote`);
-            await stagehand.act('click on "Decline Quote" from the dropdown menu');
-            await page.waitForTimeout(2000);
-
-            // Fill in the reason in the popup
-            console.log(`    → Filling decline reason`);
-            const filled = await page.evaluate(() => {
-              const inputs = document.querySelectorAll('textarea, input[type="text"], .modal input, .modal textarea, [role="dialog"] textarea, [role="dialog"] input[type="text"]');
-              for (const input of inputs) {
-                const el = input as HTMLInputElement | HTMLTextAreaElement;
-                if (el.offsetParent !== null) {
-                  el.value = "Briq Denied Quote";
-                  el.dispatchEvent(new Event("input", { bubbles: true }));
-                  el.dispatchEvent(new Event("change", { bubbles: true }));
-                  return true;
-                }
-              }
-              return false;
-            });
-
-            if (!filled) {
-              await stagehand.act('type "Briq Denied Quote" in the text field in the popup');
+          // Fill the reason textarea in the modal
+          console.log(`    → Filling decline reason`);
+          const reasonFilled = await newPage.evaluate(() => {
+            // Target the exact textarea: data-cy="reason"
+            const textarea = document.querySelector('textarea[data-cy="reason"], textarea[name="Reason"], textarea.form-control') as HTMLTextAreaElement;
+            if (textarea) {
+              textarea.focus();
+              textarea.value = 'Briq Denied Quote';
+              textarea.dispatchEvent(new Event('input', { bubbles: true }));
+              textarea.dispatchEvent(new Event('change', { bubbles: true }));
+              return true;
             }
-            await page.waitForTimeout(1000);
+            return false;
+          });
 
-            // Click the Decline Quote button in the popup
-            console.log(`    → Confirming decline`);
-            await stagehand.act('click the "Decline Quote" button in the popup to confirm');
-            await page.waitForTimeout(3000);
-
-            quotesOnThisJob++;
-            quotesDeclined++;
-            console.log(`    ✅ Declined quote ${quotesOnThisJob} on job ${jobId}`);
-
-          } catch (e: any) {
-            console.log(`    ⚠️  Error declining quote on job ${jobId}: ${e.message}`);
-            hasMoreQuotes = false;
+          if (!reasonFilled) {
+            console.log(`    ⚠️  Could not fill reason via DOM, trying locator...`);
+            try {
+              await newPage.locator('textarea[data-cy="reason"]').first().fill('Briq Denied Quote');
+            } catch {
+              console.log(`    ⚠️  Locator also failed — trying AI`);
+              try {
+                await stagehand.act('type "Briq Denied Quote" in the textarea in the decline popup');
+              } catch {
+                console.log(`    ⚠️  All fill methods failed — skipping`);
+                // Try to close the modal
+                await newPage.evaluate(() => {
+                  const closeBtn = document.querySelector('button[data-cy="close"], button[data-dismiss="modal"], .modal-close-button');
+                  if (closeBtn) (closeBtn as HTMLElement).click();
+                });
+                hasMoreOpenQuotes = false;
+                break;
+              }
+            }
           }
+
+          await newPage.waitForTimeout(500);
+
+          // Click the Decline Quote submit button
+          console.log(`    → Confirming decline`);
+          const submitClicked = await newPage.evaluate(() => {
+            // Target: button with data-cy="modal-submit-btn"
+            const btn = document.querySelector('button[data-cy="modal-submit-btn"]') as HTMLElement;
+            if (btn) { btn.click(); return true; }
+
+            // Fallback: any button in the modal footer with "Decline" text
+            const modalBtns = document.querySelectorAll('.modal-footer button, .modal button');
+            for (const b of modalBtns) {
+              if (b.textContent?.trim().toLowerCase().includes('decline')) {
+                (b as HTMLElement).click();
+                return true;
+              }
+            }
+            return false;
+          });
+
+          if (!submitClicked) {
+            console.log(`    ⚠️  Could not click submit button — skipping`);
+            hasMoreOpenQuotes = false;
+            break;
+          }
+
+          await newPage.waitForTimeout(3000);
+
+          quotesOnThisJob++;
+          quotesDeclined++;
+          console.log(`    ✅ Declined quote ${quotesOnThisJob} on job ${jobId}`);
         }
 
-        jobsProcessed++;
+        // Close the job tab and go back to appointments tab
+        await newPage.close();
         console.log(`  ✅ Job ${jobId} done — ${quotesOnThisJob} quotes declined`);
+        jobsProcessed++;
+
+        // Small delay between jobs
+        await page.waitForTimeout(1000);
 
       } catch (e: any) {
         console.log(`  ⚠️  Error processing job ${jobId}: ${e.message}`);
         jobsProcessed++;
+        // Try to close any extra tabs
+        const allPages = stagehand.context.pages();
+        while (allPages.length > 1) {
+          try { await allPages[allPages.length - 1].close(); } catch {}
+          allPages.pop();
+        }
       }
     }
 
