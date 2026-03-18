@@ -35,6 +35,15 @@ export async function declineQuotesOnPage(input: {
   let jobsProcessed = 0;
   let quotesDeclined = 0;
 
+  // Helper: navigate with timeout protection
+  async function safeGoto(page: any, url: string) {
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeoutMs: 60000 });
+    } catch (e: any) {
+      console.log(`    ⚠️  Page load timeout for ${url.substring(0, 80)}... — continuing anyway`);
+    }
+  }
+
   try {
     await stagehand.init();
     sessionUrl = `https://browserbase.com/sessions/${stagehand.browserbaseSessionID}`;
@@ -44,8 +53,8 @@ export async function declineQuotesOnPage(input: {
 
     // ==================== STEP 1: LOGIN ====================
     console.log("  → Login");
-    await page.goto("https://misterquik.sera.tech/admins/login", { waitUntil: "load", timeoutMs: 60000 });
-    await page.waitForTimeout(2000);
+    await safeGoto(page, "https://misterquik.sera.tech/admins/login");
+    await page.waitForTimeout(3000);
     await page.locator('input[type="email"]').first().fill(EMAIL);
     await page.locator('input[type="password"]').first().fill(PASSWORD);
     await page.waitForTimeout(1000);
@@ -67,14 +76,13 @@ export async function declineQuotesOnPage(input: {
     // ==================== STEP 2: GO TO FILTERED APPOINTMENTS ====================
     const appointmentsUrl = `https://misterquik.sera.tech/reports/appointments?jobs-table_scheduled_time=${encodeURIComponent(dateFilter)}&jobs-table_status=completed`;
     console.log(`  → Navigating to appointments: ${appointmentsUrl}`);
-    await page.goto(appointmentsUrl, { waitUntil: "load", timeoutMs: 60000 });
-    await page.waitForTimeout(8000);
-    console.log(`    ✅ On appointments page`);
+    await safeGoto(page, appointmentsUrl);
+    await page.waitForTimeout(15000);
+    console.log(`    ✅ On: ${page.url()}`);
 
     // ==================== STEP 3: NAVIGATE TO REQUESTED PAGE ====================
     if (pageNumber > 1) {
       console.log(`  → Navigating to page ${pageNumber}`);
-      // Click the page number button using evaluate
       const clicked = await page.evaluate((pn: number) => {
         const links = document.querySelectorAll('ul.pagination a.page-link, .dt-paging-button a, .page-item a');
         for (const link of links) {
@@ -101,14 +109,13 @@ export async function declineQuotesOnPage(input: {
 
     const jobIds: string[] = await page.evaluate(() => {
       const ids: string[] = [];
-      // Job IDs are in the first column — look for links or text in APPOINTMENT column
       const rows = document.querySelectorAll('table tbody tr');
       for (const row of rows) {
         const firstCell = row.querySelector('td:first-child');
         if (firstCell) {
           const link = firstCell.querySelector('a');
           const text = (link?.textContent || firstCell.textContent || "").trim();
-          const idMatch = text.match(/(\d{5,})/); // Job IDs are 7+ digit numbers
+          const idMatch = text.match(/(\d{5,})/);
           if (idMatch) ids.push(idMatch[1]);
         }
       }
@@ -135,8 +142,8 @@ export async function declineQuotesOnPage(input: {
       try {
         // Navigate to the job page
         const jobUrl = `https://misterquik.sera.tech/jobs/${jobId}`;
-        await page.goto(jobUrl, { waitUntil: "load", timeoutMs: 60000 });
-        await page.waitForTimeout(3000);
+        await safeGoto(page, jobUrl);
+        await page.waitForTimeout(5000);
 
         // Click on Quotes tab
         console.log(`    → Clicking Quotes tab`);
@@ -168,19 +175,15 @@ export async function declineQuotesOnPage(input: {
           // Check if there are any open quotes visible
           const hasOpenQuote = await page.evaluate(() => {
             const text = document.body.innerText.toLowerCase();
-            // Look for indicators of open quotes
             const hasOpen = text.includes("open") &&
               (document.querySelector('[class*="open"]') !== null ||
                document.querySelector('[data-cy*="quote"]') !== null ||
                text.includes("quote"));
-
-            // Also check for three-dot menus near quotes
             const dots = document.querySelectorAll('[class*="dots"], [class*="menu"], [class*="action"], .dropdown-toggle, .btn-icon, [data-toggle="dropdown"]');
             return dots.length > 0 && hasOpen;
           });
 
           if (!hasOpenQuote && quotesOnThisJob === 0) {
-            // Try AI to check
             try {
               const extracted = await stagehand.extract(
                 "Are there any open quotes visible on this page under the Open section? Answer yes or no."
@@ -199,7 +202,6 @@ export async function declineQuotesOnPage(input: {
           }
 
           if (!hasOpenQuote && quotesOnThisJob > 0) {
-            // Already processed some, no more left
             hasMoreQuotes = false;
             break;
           }
@@ -217,12 +219,11 @@ export async function declineQuotesOnPage(input: {
 
             // Fill in the reason in the popup
             console.log(`    → Filling decline reason`);
-            // Try to find and fill the textarea/input in the popup
             const filled = await page.evaluate(() => {
               const inputs = document.querySelectorAll('textarea, input[type="text"], .modal input, .modal textarea, [role="dialog"] textarea, [role="dialog"] input[type="text"]');
               for (const input of inputs) {
                 const el = input as HTMLInputElement | HTMLTextAreaElement;
-                if (el.offsetParent !== null) { // visible
+                if (el.offsetParent !== null) {
                   el.value = "Briq Denied Quote";
                   el.dispatchEvent(new Event("input", { bubbles: true }));
                   el.dispatchEvent(new Event("change", { bubbles: true }));
@@ -233,7 +234,6 @@ export async function declineQuotesOnPage(input: {
             });
 
             if (!filled) {
-              // Fallback: use AI to fill
               await stagehand.act('type "Briq Denied Quote" in the text field in the popup');
             }
             await page.waitForTimeout(1000);
