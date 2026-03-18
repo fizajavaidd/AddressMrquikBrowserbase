@@ -1,5 +1,5 @@
 // appointment-page-count-module.ts
-// Logs into Sera, navigates to Appointments, applies date/status filters,
+// Logs into Sera, goes directly to filtered appointments URL,
 // and returns the total page count.
 
 import { Stagehand } from "@browserbasehq/stagehand";
@@ -33,13 +33,12 @@ export async function getAppointmentPageCount(input: { dateFilter: string }): Pr
 
     // ==================== STEP 1: LOGIN ====================
     console.log("  → Login");
-    await page.goto("https://misterquik.sera.tech/admins/login", { waitUntil: "domcontentloaded", timeoutMs: 30000 });
+    await page.goto("https://misterquik.sera.tech/admins/login", { waitUntil: "load", timeoutMs: 60000 });
     await page.waitForTimeout(2000);
     await page.locator('input[type="email"]').first().fill(EMAIL);
     await page.locator('input[type="password"]').first().fill(PASSWORD);
     await page.waitForTimeout(1000);
 
-    // Click login button — try multiple selectors
     const loginSelectors = ['input[type="submit"]', 'button[type="submit"]', 'button.btn-primary'];
     for (const sel of loginSelectors) {
       try {
@@ -48,7 +47,6 @@ export async function getAppointmentPageCount(input: { dateFilter: string }): Pr
       } catch {}
     }
 
-    // Wait for redirect
     await page.waitForTimeout(5000);
     const loginUrl = page.url();
     if (loginUrl.includes("/login")) {
@@ -56,41 +54,25 @@ export async function getAppointmentPageCount(input: { dateFilter: string }): Pr
     }
     console.log(`    ✅ Logged in → ${loginUrl}`);
 
-    // ==================== STEP 2: NAVIGATE TO APPOINTMENTS ====================
-    console.log("  → Navigate to Appointments");
-    await page.goto("https://misterquik.sera.tech/reports", { waitUntil: "domcontentloaded", timeoutMs: 30000 });
-    await page.waitForTimeout(3000);
+    // ==================== STEP 2: GO DIRECTLY TO FILTERED APPOINTMENTS ====================
+    const targetUrl = `https://misterquik.sera.tech/reports/appointments?jobs-table_scheduled_time=${encodeURIComponent(dateFilter)}&jobs-table_status=completed`;
+    console.log(`  → Navigating directly to: ${targetUrl}`);
 
-    // Click "Appointment List" link
-    await stagehandRef_act(stagehand, "click on Appointment List");
-    await page.waitForTimeout(5000);
+    await page.goto(targetUrl, { waitUntil: "load", timeoutMs: 60000 });
+    await page.waitForTimeout(8000);
+    console.log(`    ✅ On: ${page.url()}`);
 
-    const reportsUrl = page.url();
-    console.log(`    ✅ On: ${reportsUrl}`);
-
-    // ==================== STEP 3: APPLY FILTERS VIA URL ====================
-    console.log(`  → Applying filters: date=${dateFilter}, status=completed`);
-
-    // Build the filtered URL by appending query params to current URL
-    const currentUrl = page.url();
-    const separator = currentUrl.includes("?") ? "&" : "?";
-    const filteredUrl = `${currentUrl}${separator}jobs-table_scheduled_time=${encodeURIComponent(dateFilter)}&jobs-table_status=completed`;
-
-    console.log(`    ℹ️  Navigating to: ${filteredUrl}`);
-    await page.goto(filteredUrl, { waitUntil: "domcontentloaded", timeoutMs: 30000 });
-    await page.waitForTimeout(5000);
-
-    // ==================== STEP 4: GET TOTAL PAGE COUNT ====================
+    // ==================== STEP 3: GET TOTAL PAGE COUNT ====================
     console.log("  → Reading page count");
 
-    // Try to extract page count from the DOM via evaluate
     const pageCount = await page.evaluate(() => {
-      // Method 1: Look for "Page X of Y" text
       const allText = document.body.innerText;
+
+      // Method 1: "Page X of Y"
       const pageOfMatch = allText.match(/Page\s+\d+\s+of\s+(\d+)/i);
       if (pageOfMatch) return parseInt(pageOfMatch[1], 10);
 
-      // Method 2: Look for pagination buttons — find the highest numbered one
+      // Method 2: Highest numbered pagination button
       const paginationBtns = document.querySelectorAll('.pagination a, .pagination button, .paginate_button, [class*="page"] a, [class*="page"] button');
       let maxPage = 0;
       for (const btn of paginationBtns) {
@@ -99,7 +81,7 @@ export async function getAppointmentPageCount(input: { dateFilter: string }): Pr
       }
       if (maxPage > 0) return maxPage;
 
-      // Method 3: Look for "Showing X to Y of Z" and calculate
+      // Method 3: "Showing X to Y of Z"
       const showingMatch = allText.match(/Showing\s+\d+\s*[-–to]+\s*(\d+)\s+of\s+(\d+)/i);
       if (showingMatch) {
         const perPage = parseInt(showingMatch[1], 10);
@@ -107,7 +89,7 @@ export async function getAppointmentPageCount(input: { dateFilter: string }): Pr
         if (perPage > 0 && total > 0) return Math.ceil(total / perPage);
       }
 
-      // Method 4: Check for numbered page links at bottom
+      // Method 4: Numbered page links
       const pageLinks = document.querySelectorAll('a[href*="page="], a[data-page], li.page-item a');
       let max2 = 0;
       for (const link of pageLinks) {
@@ -123,7 +105,6 @@ export async function getAppointmentPageCount(input: { dateFilter: string }): Pr
     if (pageCount > 0) {
       resultMessage = `Total pages found: ${pageCount}`;
     } else {
-      // Fallback: use Stagehand extract to read it with AI
       console.log("    ℹ️  DOM extraction didn't find page count, trying AI extract...");
       const extracted = await stagehand.extract(
         "Look at the bottom of the table/page. Find the pagination or page count. How many total pages are there? Return just the number."
@@ -138,26 +119,12 @@ export async function getAppointmentPageCount(input: { dateFilter: string }): Pr
     }
 
     console.log(`    ✅ ${resultMessage}`);
-
     await stagehand.close();
 
-    return {
-      status: "COMPLETED",
-      result: resultMessage,
-      sessionUrl,
-    };
+    return { status: "COMPLETED", result: resultMessage, sessionUrl };
   } catch (error: any) {
     console.error(`❌ Error: ${error.message}`);
     try { await stagehand.close(); } catch {}
-    return {
-      status: "FAILED",
-      result: `Error: ${error.message}`,
-      sessionUrl,
-    };
+    return { status: "FAILED", result: `Error: ${error.message}`, sessionUrl };
   }
-}
-
-// Helper: use stagehand.act() for natural language actions
-async function stagehandRef_act(stagehand: Stagehand, instruction: string) {
-  await stagehand.act(instruction);
 }
