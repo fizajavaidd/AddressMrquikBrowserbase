@@ -3,6 +3,8 @@ import { declineQuotesOnPage } from "./decline-quotes-module.js";
 import express from "express";
 import { runBookingTask } from "./browserbase-booking-task-module.js";
 import { getAppointmentPageCount } from "./appointment-page-count-module.js";
+import { runMembershipTask } from "./active-membership-module.js";
+import { runQBOBatchTask } from "./qbo-batch-module.js";
 import crypto from "crypto";
 
 const app = express();
@@ -18,6 +20,7 @@ const tasks: Record<string, {
   quotesDeclined: number;
   startedAt: string;
   completedAt: string | null;
+  extraData?: Record<string, any>;
 }> = {};
 
 // Clean up old tasks every 30 minutes (keep last 2 hours)
@@ -47,7 +50,7 @@ app.get("/", (_req, res) => {
   res.json({ service: "stratablue-automation-api", status: "running" });
 });
 
-// Booking endpoint
+// Booking endpoint (sync)
 app.post("/book", authCheck, async (req, res) => {
   const startTime = Date.now();
   console.log(`\n📥 Received booking request at ${new Date().toISOString()}`);
@@ -73,7 +76,7 @@ app.post("/book", authCheck, async (req, res) => {
   }
 });
 
-// Appointment page count endpoint
+// Appointment page count endpoint (sync)
 app.post("/appointment-pages", authCheck, async (req, res) => {
   const dateFilter = req.body.dateFilter;
   if (!dateFilter) {
@@ -91,7 +94,7 @@ app.post("/appointment-pages", authCheck, async (req, res) => {
   }
 });
 
-// Decline quotes — starts task in background, returns taskId
+// Decline quotes — async (returns taskId, poll for status)
 app.post("/decline-quotes", authCheck, async (req, res) => {
   const { dateFilter, pageNumber } = req.body;
   if (!dateFilter || !pageNumber) {
@@ -147,7 +150,88 @@ app.post("/decline-quotes", authCheck, async (req, res) => {
     });
 });
 
-// Poll task status
+// Membership date fixer — sync (like /book)
+app.post("/run-membership", authCheck, async (_req, res) => {
+  const startTime = Date.now();
+  console.log(`\n📥 Membership task started at ${new Date().toISOString()}`);
+  try {
+    const result = await runMembershipTask();
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`📤 Membership completed in ${elapsed}s — success: ${result.success}\n`);
+    res.json(result);
+  } catch (error: any) {
+    console.error(`❌ Membership task failed: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// QBO batch — async (returns taskId, poll for status)
+app.post("/run-qbo-batch", authCheck, async (req, res) => {
+  const testInvoiceUrl: string | undefined = req.body?.testInvoiceUrl;
+
+  const taskId = crypto.randomUUID();
+  console.log(`\n📥 QBO batch: taskId=${taskId}, testMode=${!!testInvoiceUrl}`);
+
+  // Store task as running
+  tasks[taskId] = {
+    status: "RUNNING",
+    result: "Processing QBO batch...",
+    jobsProcessed: 0,
+    quotesDeclined: 0,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+  };
+
+  // Respond immediately with taskId
+  res.json({
+    data: {
+      status: "STARTED",
+      taskId,
+      message: `QBO batch task started. Poll GET /task/${taskId} for result.`,
+    },
+  });
+
+  // Run in background
+  runQBOBatchTask({ testInvoiceUrl })
+    .then((result) => {
+      console.log(`📤 QBO task ${taskId} done: success=${result.success}`);
+      tasks[taskId] = {
+        status: result.success ? "COMPLETED" : "FAILED",
+        result: result.message,
+        jobsProcessed: 0,
+        quotesDeclined: 0,
+        startedAt: tasks[taskId].startedAt,
+        completedAt: new Date().toISOString(),
+        extraData: {
+          testMode: result.testMode,
+          invoiceCount: result.invoiceCount,
+          invoiceAmount: result.invoiceAmount,
+          invoiceItems: result.invoiceItems,
+          paymentAmount: result.paymentAmount,
+          paymentItems: result.paymentItems,
+          batchNumber: result.batchNumber,
+          noInvoices: result.noInvoices,
+          paymentsCleared: result.paymentsCleared,
+          batchCreated: result.batchCreated,
+          elapsedMinutes: result.elapsedMinutes,
+          sessionUrl: result.sessionUrl,
+        },
+      };
+    })
+    .catch((error) => {
+      console.error(`❌ QBO task ${taskId} failed: ${error.message}`);
+      tasks[taskId] = {
+        status: "FAILED",
+        result: `Error: ${error.message}`,
+        jobsProcessed: 0,
+        quotesDeclined: 0,
+        startedAt: tasks[taskId].startedAt,
+        completedAt: new Date().toISOString(),
+      };
+    });
+});
+
+// Poll task status (shared by decline-quotes and qbo-batch)
 app.get("/task/:taskId", authCheck, (req, res) => {
   const task = tasks[req.params.taskId];
   if (!task) {
@@ -162,6 +246,7 @@ app.get("/task/:taskId", authCheck, (req, res) => {
       quotesDeclined: task.quotesDeclined,
       startedAt: task.startedAt,
       completedAt: task.completedAt,
+      ...(task.extraData || {}),
     },
   });
 });
@@ -172,6 +257,8 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`   POST /book               — run a booking`);
   console.log(`   POST /appointment-pages   — get appointment page count`);
   console.log(`   POST /decline-quotes      — start decline task (returns taskId)`);
+  console.log(`   POST /run-membership      — run membership date fixer`);
+  console.log(`   POST /run-qbo-batch       — start QBO batch (returns taskId)`);
   console.log(`   GET  /task/:taskId        — poll task status`);
   console.log(`   GET  /health             — health check`);
 });

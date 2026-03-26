@@ -1,14 +1,33 @@
-// qbo-batch-server.ts
-// Single file — Express server + Stagehand task
-// Deploy on Render, call from n8n Schedule Trigger via POST /run-qbo-batch
-//
-// n8n HTTP Request node — set Timeout: 900000 (15 min) in Options
-//
-// TEST MODE: POST /run-qbo-batch with body { "testInvoiceUrl": "https://..." }
-// PROD MODE: POST /run-qbo-batch with empty body {}
+// qbo-batch-module.ts
+// Stagehand task — QBO unbatched invoice batcher
+// Extracted from qbo-batch-server.ts for use in server.ts
 
 import { Stagehand } from "@browserbasehq/stagehand";
-import express from "express";
+
+// =============================================================================
+// TYPES
+// =============================================================================
+
+export interface QBOBatchOptions {
+  testInvoiceUrl?: string;
+}
+
+export interface QBOBatchResult {
+  success: boolean;
+  message: string;
+  testMode: boolean;
+  invoiceCount: number;
+  invoiceAmount: string;
+  invoiceItems: string;
+  paymentAmount: string;
+  paymentItems: string;
+  batchNumber: string;
+  noInvoices: boolean;
+  paymentsCleared: boolean;
+  batchCreated: boolean;
+  elapsedMinutes: number;
+  sessionUrl: string;
+}
 
 // =============================================================================
 // HELPERS
@@ -36,15 +55,6 @@ async function waitUntilHidden(page: any, selector: string, timeoutMs = 15000): 
     await page.waitForTimeout(500);
   }
   return false;
-}
-
-async function sleepWithCountdown(page: any, totalMs: number, intervalMs = 30000): Promise<void> {
-  const end = Date.now() + totalMs;
-  while (Date.now() < end) {
-    const remaining = Math.ceil((end - Date.now()) / 1000);
-    console.log(`    ⏳ ${remaining}s remaining...`);
-    await page.waitForTimeout(Math.min(intervalMs, end - Date.now()));
-  }
 }
 
 async function deselectAllOnCurrentTab(page: any): Promise<number> {
@@ -85,10 +95,10 @@ async function clickTab(page: any, tabName: "Invoices" | "Payments"): Promise<bo
 }
 
 // =============================================================================
-// MAIN TASK
+// EXPORTED TASK FUNCTION
 // =============================================================================
 
-async function runQBOBatchTask(options: { testInvoiceUrl?: string } = {}) {
+export async function runQBOBatchTask(options: QBOBatchOptions = {}): Promise<QBOBatchResult> {
   const email     = process.env.SERA_EMAIL    || "mcc@stratablue.com";
   const password  = process.env.SERA_PASSWORD || "";
   const startTime = Date.now();
@@ -172,18 +182,12 @@ async function runQBOBatchTask(options: { testInvoiceUrl?: string } = {}) {
     console.log(`\n[2] → Navigating to: ${unbatchedUrl}`);
     await page.goto(unbatchedUrl);
 
-    // Wait 15 seconds in both test and production — enough for page to load
-    // The 5-minute wait was removed because it pushed total time over
-    // Render free tier's 10-minute connection limit causing ECONNABORTED in n8n
     console.log("\n[2b] → Waiting 15 seconds for page to load...");
     await page.waitForTimeout(15000);
     console.log("    ✅ Page load wait complete");
 
     // ------------------------------------------------------------------
     // STEP 3 — Read BOTH tab labels for correct counts
-    //   "Invoices (13)" = 13 invoices  ← use this, NOT the footer
-    //   "Payments (16)" = 16 payments
-    //   Footer "29 items" = combined   ← NEVER use
     // ------------------------------------------------------------------
     console.log("\n[3] → Reading tab labels for correct counts");
 
@@ -240,7 +244,6 @@ async function runQBOBatchTask(options: { testInvoiceUrl?: string } = {}) {
 
     // ------------------------------------------------------------------
     // STEP 5 — Payments tab → deselect everything
-    //   Goal: header shows "Total Payments: None Selected"
     // ------------------------------------------------------------------
     console.log("\n[5] → Payments tab — deselecting all payments");
     await clickTab(page, "Payments");
@@ -278,7 +281,7 @@ async function runQBOBatchTask(options: { testInvoiceUrl?: string } = {}) {
     await page.waitForTimeout(3000);
 
     // ------------------------------------------------------------------
-    // NO INVOICES — bail early (only based on tab label count)
+    // NO INVOICES — bail early
     // ------------------------------------------------------------------
     if (invoiceCount === 0) {
       context.noInvoices = true;
@@ -321,198 +324,194 @@ async function runQBOBatchTask(options: { testInvoiceUrl?: string } = {}) {
       console.log(`    ℹ️  Total Payments: None Selected = ${headerTotals.paymentNoneSelected}`);
       context.invoiceTotal = headerTotals.invoiceTotal;
 
-      // If header shows "Total Invoices: None Selected" after selecting all,
-      // it means something went wrong — no invoices are actually selected
       if (/none selected/i.test(headerTotals.invoiceTotal) || headerTotals.invoiceTotal === "N/A") {
         context.noInvoices = true;
         context.completionMessage = "No records found.";
         console.log("    ✅ Header shows no invoices selected — returning No records found");
-        // Do not return here — fall through to finally block so result is always returned
       } else {
 
-      if (headerTotals.paymentNoneSelected) {
-        console.log("    ✅ Perfect — invoices selected, Total Payments: None Selected");
-      } else {
-        console.log("    ⚠️  Payments not 'None Selected' — doing one final retry");
-        await clickTab(page, "Payments");
-        await page.waitForTimeout(2000);
-        await deselectAllOnCurrentTab(page);
-        await page.waitForTimeout(2000);
-        await clickTab(page, "Invoices");
-        await page.waitForTimeout(2000);
-        await page.evaluate(() => {
-          const cb = document.querySelector(
-            "thead input[type='checkbox'], th input[type='checkbox']"
-          ) as HTMLInputElement | null;
-          if (cb && !cb.checked) cb.click();
+        if (headerTotals.paymentNoneSelected) {
+          console.log("    ✅ Perfect — invoices selected, Total Payments: None Selected");
+        } else {
+          console.log("    ⚠️  Payments not 'None Selected' — doing one final retry");
+          await clickTab(page, "Payments");
+          await page.waitForTimeout(2000);
+          await deselectAllOnCurrentTab(page);
+          await page.waitForTimeout(2000);
+          await clickTab(page, "Invoices");
+          await page.waitForTimeout(2000);
+          await page.evaluate(() => {
+            const cb = document.querySelector(
+              "thead input[type='checkbox'], th input[type='checkbox']"
+            ) as HTMLInputElement | null;
+            if (cb && !cb.checked) cb.click();
+          });
+          await page.waitForTimeout(2000);
+
+          const recheckNone = await page.evaluate(() =>
+            /total payments?[:\s]*none selected/i.test(document.body.textContent || "")
+          );
+          console.log(recheckNone
+            ? "    ✅ Confirmed: Total Payments: None Selected"
+            : "    ⚠️  Still not 'None Selected' — proceeding, modal is the final gate"
+          );
+        }
+
+        // ------------------------------------------------------------------
+        // STEP 8 — Click Send to QuickBooks
+        // ------------------------------------------------------------------
+        console.log("\n[8] → Clicking Send to QuickBooks");
+        const qbClicked = await page.evaluate(() => {
+          const el = Array.from(document.querySelectorAll("button, a")).find(
+            (e) =>
+              (e.textContent?.toLowerCase().includes("send to quickbooks") ||
+                e.textContent?.toLowerCase().includes("quickbooks")) &&
+              (e as HTMLElement).offsetParent !== null
+          ) as HTMLElement | null;
+          if (el) { el.click(); return true; }
+          return false;
         });
-        await page.waitForTimeout(2000);
+        if (!qbClicked) throw new Error('"Send to QuickBooks" button not found');
+        await page.waitForTimeout(3000);
 
-        const recheckNone = await page.evaluate(() =>
-          /total payments?[:\s]*none selected/i.test(document.body.textContent || "")
-        );
-        console.log(recheckNone
-          ? "    ✅ Confirmed: Total Payments: None Selected"
-          : "    ⚠️  Still not 'None Selected' — proceeding, modal is the final gate"
-        );
-      }
+        // ------------------------------------------------------------------
+        // STEP 9 — Read modal — HARD safety gate
+        // ------------------------------------------------------------------
+        console.log("\n[9] → Reading batch modal");
+        await waitUntilVisible(page, '.modal, [role="dialog"], .modal-content, .sera-modal', 15000);
+        await page.waitForTimeout(3000);
 
-      // ------------------------------------------------------------------
-      // STEP 8 — Click Send to QuickBooks
-      // ------------------------------------------------------------------
-      console.log("\n[8] → Clicking Send to QuickBooks");
-      const qbClicked = await page.evaluate(() => {
-        const el = Array.from(document.querySelectorAll("button, a")).find(
-          (e) =>
-            (e.textContent?.toLowerCase().includes("send to quickbooks") ||
-              e.textContent?.toLowerCase().includes("quickbooks")) &&
-            (e as HTMLElement).offsetParent !== null
-        ) as HTMLElement | null;
-        if (el) { el.click(); return true; }
-        return false;
-      });
-      if (!qbClicked) throw new Error('"Send to QuickBooks" button not found');
-      await page.waitForTimeout(3000);
+        const modalDetails: {
+          batchNumber:   string;
+          invoiceAmount: string;
+          invoiceItems:  number;
+          paymentAmount: string;
+          paymentItems:  number;
+          rawText:       string;
+        } = await page.evaluate(() => {
+          const modal   = document.querySelector(
+            '.modal, [role="dialog"], .modal-content, .sera-modal'
+          );
+          const text    = modal?.textContent || "";
+          const rawText = text.replace(/\s+/g, " ").trim().substring(0, 600);
 
-      // ------------------------------------------------------------------
-      // STEP 9 — Read modal — HARD safety gate
-      // ------------------------------------------------------------------
-      console.log("\n[9] → Reading batch modal");
-      await waitUntilVisible(page, '.modal, [role="dialog"], .modal-content, .sera-modal', 15000);
-      await page.waitForTimeout(3000);
+          const batchMatch =
+            text.match(/batch\s*#?\s*(\d{4,})/i) ||
+            text.match(/#\s*(\d{4,})/);
 
-      const modalDetails: {
-        batchNumber:   string;
-        invoiceAmount: string;
-        invoiceItems:  number;
-        paymentAmount: string;
-        paymentItems:  number;
-        rawText:       string;
-      } = await page.evaluate(() => {
-        const modal   = document.querySelector(
-          '.modal, [role="dialog"], .modal-content, .sera-modal'
-        );
-        const text    = modal?.textContent || "";
-        const rawText = text.replace(/\s+/g, " ").trim().substring(0, 600);
+          const lines = text
+            .split(/[\n\r]+/)
+            .map(l => l.replace(/\s+/g, " ").trim())
+            .filter(Boolean);
 
-        const batchMatch =
-          text.match(/batch\s*#?\s*(\d{4,})/i) ||
-          text.match(/#\s*(\d{4,})/);
+          let invoiceAmount = "";
+          let invoiceItems  = 0;
+          let paymentAmount = "$0.00";
+          let paymentItems  = 0;
 
-        const lines = text
-          .split(/[\n\r]+/)
-          .map(l => l.replace(/\s+/g, " ").trim())
-          .filter(Boolean);
-
-        let invoiceAmount = "";
-        let invoiceItems  = 0;
-        let paymentAmount = "$0.00";
-        let paymentItems  = 0;
-
-        for (const line of lines) {
-          if (/^invoices?/i.test(line)) {
-            const amt   = line.match(/\$([\d,]+\.\d{2})/);
-            const items = line.match(/(\d+)\s*items?/i);
-            if (amt)   invoiceAmount = `$${amt[1]}`;
-            if (items) invoiceItems  = parseInt(items[1], 10);
+          for (const line of lines) {
+            if (/^invoices?/i.test(line)) {
+              const amt   = line.match(/\$([\d,]+\.\d{2})/);
+              const items = line.match(/(\d+)\s*items?/i);
+              if (amt)   invoiceAmount = `$${amt[1]}`;
+              if (items) invoiceItems  = parseInt(items[1], 10);
+            }
+            if (/^payments?/i.test(line)) {
+              const amt   = line.match(/\$([\d,]+\.\d{2})/);
+              const items = line.match(/(\d+)\s*items?/i);
+              if (amt)   paymentAmount = `$${amt[1]}`;
+              if (items) paymentItems  = parseInt(items[1], 10);
+            }
           }
-          if (/^payments?/i.test(line)) {
-            const amt   = line.match(/\$([\d,]+\.\d{2})/);
-            const items = line.match(/(\d+)\s*items?/i);
-            if (amt)   paymentAmount = `$${amt[1]}`;
-            if (items) paymentItems  = parseInt(items[1], 10);
+
+          if (!invoiceAmount) {
+            const m = text.match(/invoices?\s*\$\s*([\d,]+\.\d{2})/i);
+            if (m) invoiceAmount = `$${m[1]}`;
           }
-        }
+          if (!invoiceItems) {
+            const m = text.match(/invoices?[^$\n]*?(\d+)\s*items?/i);
+            if (m) invoiceItems = parseInt(m[1], 10);
+          }
+          if (paymentItems === 0) {
+            const m = text.match(/payments?[^$\n]*?(\d+)\s*items?/i);
+            if (m) paymentItems = parseInt(m[1], 10);
+          }
 
-        if (!invoiceAmount) {
-          const m = text.match(/invoices?\s*\$\s*([\d,]+\.\d{2})/i);
-          if (m) invoiceAmount = `$${m[1]}`;
-        }
-        if (!invoiceItems) {
-          const m = text.match(/invoices?[^$\n]*?(\d+)\s*items?/i);
-          if (m) invoiceItems = parseInt(m[1], 10);
-        }
-        if (paymentItems === 0) {
-          const m = text.match(/payments?[^$\n]*?(\d+)\s*items?/i);
-          if (m) paymentItems = parseInt(m[1], 10);
-        }
+          return {
+            batchNumber:   batchMatch ? batchMatch[1] : "",
+            invoiceAmount,
+            invoiceItems,
+            paymentAmount,
+            paymentItems,
+            rawText,
+          };
+        });
 
-        return {
-          batchNumber:   batchMatch ? batchMatch[1] : "",
-          invoiceAmount,
-          invoiceItems,
-          paymentAmount,
-          paymentItems,
-          rawText,
-        };
-      });
+        console.log(`\n    📋 Modal raw text:\n    ${modalDetails.rawText}\n`);
+        console.log(`    ℹ️  Batch #:   "${modalDetails.batchNumber}"`);
+        console.log(`    ℹ️  Invoices:   ${modalDetails.invoiceAmount} (${modalDetails.invoiceItems} items)`);
+        console.log(`    ℹ️  Payments:   ${modalDetails.paymentAmount} (${modalDetails.paymentItems} items)`);
 
-      console.log(`\n    📋 Modal raw text:\n    ${modalDetails.rawText}\n`);
-      console.log(`    ℹ️  Batch #:   "${modalDetails.batchNumber}"`);
-      console.log(`    ℹ️  Invoices:   ${modalDetails.invoiceAmount} (${modalDetails.invoiceItems} items)`);
-      console.log(`    ℹ️  Payments:   ${modalDetails.paymentAmount} (${modalDetails.paymentItems} items)`);
+        // HARD ABORT — if any payment items in batch, stop now
+        if (modalDetails.paymentItems > 0) {
+          throw new Error(
+            `Modal shows ${modalDetails.paymentItems} payment item(s) — aborting. Only invoices should be batched.`
+          );
+        }
+        console.log("    ✅ Modal verified — 0 payment items in batch");
 
-      // HARD ABORT — if any payment items in batch, stop now
-      if (modalDetails.paymentItems > 0) {
-        throw new Error(
-          `Modal shows ${modalDetails.paymentItems} payment item(s) — aborting. Only invoices should be batched.`
-        );
+        const batchLabel = modalDetails.batchNumber
+          ? `Batch #${modalDetails.batchNumber}`
+          : "Batch";
+
+        context.batchNumber   = modalDetails.batchNumber;
+        context.invoiceAmount = modalDetails.invoiceAmount || context.invoiceTotal || "N/A";
+        context.invoiceItems  = String(modalDetails.invoiceItems || invoiceCount);
+        context.paymentAmount = modalDetails.paymentAmount;
+        context.paymentItems  = String(modalDetails.paymentItems);
+
+        // ------------------------------------------------------------------
+        // STEP 10 — Click Create Batch
+        // ------------------------------------------------------------------
+        console.log("\n[10] → Clicking Create Batch");
+        const createBatchClicked = await page.evaluate(() => {
+          const modal  = document.querySelector(
+            '.modal, [role="dialog"], .modal-content, .sera-modal'
+          );
+          const scope  = modal || document;
+          const byText = Array.from(scope.querySelectorAll("button")).find(
+            (e) =>
+              e.textContent?.toLowerCase().includes("create batch") &&
+              (e as HTMLElement).offsetParent !== null
+          ) as HTMLElement | null;
+          if (byText) { byText.click(); return true; }
+          const fallback = scope.querySelector(
+            'button[type="submit"], button.btn-primary, button.primary'
+          ) as HTMLElement | null;
+          if (fallback) { (fallback as HTMLElement).click(); return true; }
+          return false;
+        });
+        if (!createBatchClicked) throw new Error('"Create Batch" button not found');
+        await page.waitForTimeout(5000);
+
+        // ------------------------------------------------------------------
+        // STEP 11 — Wait for modal to close
+        // ------------------------------------------------------------------
+        console.log("\n[11] → Waiting for batch to complete");
+        await waitUntilHidden(page, '.modal, [role="dialog"], .modal-content', 30000);
+
+        context.batchCreated = true;
+        context.completionMessage = [
+          `**Invoice Processing:** Selected ${invoiceCount} invoice(s) on the 'Invoices' tab.`,
+          `**Batch Creation:** Created ${batchLabel}.`,
+          `   - **Total Invoices:** ${context.invoiceAmount} (${context.invoiceItems} items)`,
+          `   - **Total Payments:** ${context.paymentAmount} (${context.paymentItems} items)`,
+          `**Confirmation:** The batch is currently processing on the system.`,
+        ].join("\n");
+
+        console.log(`\n✅ Done:\n${context.completionMessage}`);
       }
-      console.log("    ✅ Modal verified — 0 payment items in batch");
-
-      const batchLabel = modalDetails.batchNumber
-        ? `Batch #${modalDetails.batchNumber}`
-        : "Batch";
-
-      context.batchNumber   = modalDetails.batchNumber;
-      context.invoiceAmount = modalDetails.invoiceAmount || context.invoiceTotal || "N/A";
-      context.invoiceItems  = String(modalDetails.invoiceItems || invoiceCount);
-      context.paymentAmount = modalDetails.paymentAmount;
-      context.paymentItems  = String(modalDetails.paymentItems);
-
-      // ------------------------------------------------------------------
-      // STEP 10 — Click Create Batch
-      // ------------------------------------------------------------------
-      console.log("\n[10] → Clicking Create Batch");
-      const createBatchClicked = await page.evaluate(() => {
-        const modal  = document.querySelector(
-          '.modal, [role="dialog"], .modal-content, .sera-modal'
-        );
-        const scope  = modal || document;
-        const byText = Array.from(scope.querySelectorAll("button")).find(
-          (e) =>
-            e.textContent?.toLowerCase().includes("create batch") &&
-            (e as HTMLElement).offsetParent !== null
-        ) as HTMLElement | null;
-        if (byText) { byText.click(); return true; }
-        const fallback = scope.querySelector(
-          'button[type="submit"], button.btn-primary, button.primary'
-        ) as HTMLElement | null;
-        if (fallback) { (fallback as HTMLElement).click(); return true; }
-        return false;
-      });
-      if (!createBatchClicked) throw new Error('"Create Batch" button not found');
-      await page.waitForTimeout(5000);
-
-      // ------------------------------------------------------------------
-      // STEP 11 — Wait for modal to close
-      // ------------------------------------------------------------------
-      console.log("\n[11] → Waiting for batch to complete");
-      await waitUntilHidden(page, '.modal, [role="dialog"], .modal-content', 30000);
-
-      context.batchCreated = true;
-      context.completionMessage = [
-        `**Invoice Processing:** Selected ${invoiceCount} invoice(s) on the 'Invoices' tab.`,
-        `**Batch Creation:** Created ${batchLabel}.`,
-        `   - **Total Invoices:** ${context.invoiceAmount} (${context.invoiceItems} items)`,
-        `   - **Total Payments:** ${context.paymentAmount} (${context.paymentItems} items)`,
-        `**Confirmation:** The batch is currently processing on the system.`,
-      ].join("\n");
-
-      console.log(`\n✅ Done:\n${context.completionMessage}`);
     }
-
-      } // end else (invoiceTotal valid)
   } catch (error: any) {
     console.error(`\n❌ Task error: ${error.message}`);
     context.taskError = error.message;
@@ -542,93 +541,3 @@ async function runQBOBatchTask(options: { testInvoiceUrl?: string } = {}) {
     sessionUrl,
   };
 }
-
-// =============================================================================
-// EXPRESS SERVER — async job pattern
-// Render free tier drops long-held connections even if the task finishes.
-// Fix: respond with jobId instantly, n8n polls /job-status/:jobId every 30s.
-// =============================================================================
-
-type JobStatus = "running" | "done" | "failed";
-interface Job {
-  id:        string;
-  status:    JobStatus;
-  startedAt: number;
-  result?:   Record<string, any>;
-  error?:    string;
-}
-const jobs = new Map<string, Job>();
-function makeJobId(): string {
-  return "job_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
-}
-
-const app = express();
-app.use(express.json());
-
-app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "qbo-batch-server" });
-});
-
-// POST /run-qbo-batch — returns { jobId } in under 1 second, task runs in background
-app.post("/run-qbo-batch", (req, res) => {
-  console.log(`\n📥 [${new Date().toISOString()}] POST /run-qbo-batch`);
-  const testInvoiceUrl: string | undefined = req.body?.testInvoiceUrl;
-
-  const jobId = makeJobId();
-  const job: Job = { id: jobId, status: "running", startedAt: Date.now() };
-  jobs.set(jobId, job);
-
-  runQBOBatchTask({ testInvoiceUrl })
-    .then((result) => {
-      if (!result) return;
-      job.status = result.success ? "done" : "failed";
-      job.result = result;
-      console.log(`\n✅ Job ${jobId} → ${job.status}`);
-    })
-    .catch(err => {
-      job.status = "failed";
-      job.error  = err.message;
-      console.error(`\n❌ Job ${jobId} threw: ${err.message}`);
-    });
-
-  res.json({ jobId, status: "running" });
-});
-
-// GET /job-status/:jobId — poll every 30s until status !== "running"
-app.get("/job-status/:jobId", (req, res) => {
-  const job = jobs.get(req.params.jobId);
-  if (!job) return res.status(404).json({ error: "Job not found" });
-
-  if (job.status === "running") {
-    const elapsed = ((Date.now() - job.startedAt) / 1000 / 60).toFixed(1);
-    return res.json({ jobId: job.id, status: "running", elapsedMinutes: parseFloat(elapsed) });
-  }
-
-  const resultData: Record<string, any> = job.result ?? {};
-  const response = { jobId: job.id, status: job.status, ...resultData, ...(job.error ? { error: job.error } : {}) };
-  jobs.delete(job.id);
-  res.json(response);
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("\n QBO Batch Server running on port " + PORT);
-  console.log("   POST /run-qbo-batch  <- n8n calls this (set Timeout: 900000 in Options)");
-  console.log("   GET  /health         <- Render health check\n");
-
-  // Self-ping every 4 minutes to keep Render free tier awake
-  const SELF_URL = process.env.RENDER_EXTERNAL_URL
-    ? `${process.env.RENDER_EXTERNAL_URL}/health`
-    : `http://localhost:${PORT}/health`;
-
-  console.log("Self-ping active -> " + SELF_URL + " every 4 min\n");
-
-  setInterval(async () => {
-    try {
-      const res = await fetch(SELF_URL);
-      console.log("Self-ping -> " + res.status);
-    } catch (err: any) {
-      console.warn("Self-ping failed: " + err.message);
-    }
-  }, 4 * 60 * 1000);
-});

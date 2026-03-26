@@ -1,8 +1,8 @@
-// active-membership-server.ts
+// active-membership-module.ts
 // Stagehand v3 — Mister Quik membership date fixer
+// Extracted from active-membership-server.ts for use in server.ts
 
 import { Stagehand, V3 } from "@browserbasehq/stagehand";
-import express, { Request, Response } from "express";
 
 type SPage = NonNullable<ReturnType<V3["context"]["activePage"]>>;
 type ModalVariant = "ends-on" | "next-billing";
@@ -37,7 +37,7 @@ interface FailedEntry {
   message: string;
 }
 
-interface TaskResult {
+export interface MembershipTaskResult {
   success: boolean;
   message: string;
   processedCount: number;
@@ -186,7 +186,7 @@ async function waitForModalClose(page: SPage, ms = 10000): Promise<boolean> {
 }
 
 // =============================================================================
-// FIELD FINDER (UPDATED)
+// FIELD FINDER
 // =============================================================================
 
 async function findInputByLabel(page: SPage, labelText: string) {
@@ -213,7 +213,6 @@ async function findInputByLabel(page: SPage, labelText: string) {
         (labelLower.includes("ends") && directText.includes("end"));
 
       if (isMatch && directText.length > 0 && directText.length < 40) {
-
         const parent = htmlEl.parentElement;
         if (parent) {
           const inputs = Array.from(parent.querySelectorAll("input"));
@@ -294,10 +293,10 @@ async function clickSaveComplete(page: SPage): Promise<void> {
 }
 
 // =============================================================================
-// MAIN TASK (ONLY small fallback added)
+// EXPORTED TASK FUNCTION
 // =============================================================================
 
-async function runMembershipTask(): Promise<TaskResult> {
+export async function runMembershipTask(): Promise<MembershipTaskResult> {
   const t0 = Date.now();
   const stagehand = new Stagehand({
     env: "BROWSERBASE",
@@ -362,7 +361,7 @@ async function runMembershipTask(): Promise<TaskResult> {
 
         let secondField = await findInputByLabel(page, secondLabel);
 
-        // 🔥 placeholder fallback
+        // placeholder fallback
         if (!secondField.found) {
           const fallback = await page.evaluate(() => {
             const inputs = Array.from(document.querySelectorAll<HTMLInputElement>("input"));
@@ -433,18 +432,3 @@ async function runMembershipTask(): Promise<TaskResult> {
     await stagehand.close();
   }
 }
-
-// =============================================================================
-// EXPRESS
-// =============================================================================
-
-const app = express();
-app.use(express.json());
-
-app.post("/run-membership", async (req: Request, res: Response) => {
-  const result = await runMembershipTask();
-  res.json(result);
-});
-
-const port = process.env.PORT || 8080;
-app.listen(port, () => console.log(`Server listening on port ${port}`));
