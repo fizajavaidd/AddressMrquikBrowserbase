@@ -58,7 +58,7 @@ app.post("/book", authCheck, async (req, res) => {
   console.log(`   Customer: ${req.body.firstName} ${req.body.lastName}`);
   console.log(`   Address: ${req.body.serviceAddress}`);
   try {
-    const result = await runBookingTask(req.body);
+    const result = await runRoofingBookingTask(req.body);
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`📤 Completed in ${elapsed}s — success: ${result.success}\n`);
     res.json({
