@@ -758,20 +758,85 @@ function buildSteps(I: any): Step[] {
           Array.from(document.querySelectorAll(".address-card")).map(el => el.textContent || "")
         );
 
+        // IMPROVED CODE - with secondary verification
         let matchedIndex = -1;
+
+        // First pass: find ALL cards that match the address substring
+        const matchingIndices: number[] = [];
         for (let i = 0; i < cardTexts.length; i++) {
           if (addressesMatch(cardTexts[i], sa)) {
-            matchedIndex = i;
-            console.log(`    ℹ️  Address matched at card ${i}`);
-            break;
+            matchingIndices.push(i);
+            console.log(`    ℹ️  Address match found at card ${i}`);
           }
         }
 
-        if (matchedIndex === -1) {
+        if (matchingIndices.length === 0) {
           console.log(`    ℹ️  No address card matched "${sa}"`);
           ctx.addressFound = false;
           return;
         }
+
+        if (matchingIndices.length === 1) {
+          // Unique match - use it
+          matchedIndex = matchingIndices[0];
+          console.log(`    ✅ Unique address match at card ${matchedIndex}`);
+        } else {
+          // Multiple matches - use secondary verification
+          console.log(`    ⚠️  Multiple address matches (${matchingIndices.length}) — checking secondary fields...`);
+          
+          // Get full card details for matching indices
+          const cardsWithDetails = await page.evaluate((indices: number[]) => {
+            const cards = Array.from(document.querySelectorAll(".address-card"));
+            return indices.map(idx => ({
+              index: idx,
+              text: cards[idx]?.textContent || "",
+              locationName: cards[idx]?.querySelector('[data-cy="location-name"]')?.textContent || "",
+            }));
+          }, matchingIndices);
+          
+          const customerFirstName = I.firstName;
+          const customerLastName = I.lastName;
+          const customerPhone = I.phone;
+          const customerEmail = I.email;
+          
+          let bestMatch = null;
+          let matchReason = "";
+          
+          for (const card of cardsWithDetails) {
+            const cardText = card.text.toLowerCase();
+            
+            const hasFirstName = customerFirstName !== "Not Provided" && cardText.includes(customerFirstName.toLowerCase());
+            const hasLastName = customerLastName !== "Not Provided" && cardText.includes(customerLastName.toLowerCase());
+            const nameMatches = hasFirstName && hasLastName;
+            const phoneMatches = customerPhone !== "Not Provided" && textContainsPhone(cardText, customerPhone);
+            const emailMatches = customerEmail !== "Not Provided" && cardText.includes(customerEmail.toLowerCase());
+            
+            if (nameMatches) {
+              bestMatch = card;
+              matchReason = "name";
+              break;
+            } else if (phoneMatches) {
+              bestMatch = card;
+              matchReason = "phone";
+              break;
+            } else if (emailMatches) {
+              bestMatch = card;
+              matchReason = "email";
+              break;
+            }
+          }
+          
+          if (bestMatch) {
+            matchedIndex = bestMatch.index;
+            console.log(`    ✅ Matched by ${matchReason} at card ${matchedIndex}`);
+          } else {
+            // No secondary match - use first matching card
+            matchedIndex = matchingIndices[0];
+            console.log(`    ⚠️  No secondary match — using first matching card (index ${matchedIndex})`);
+          }
+        }
+
+        ctx.addressFound = true;
 
         ctx.addressFound = true;
 
@@ -899,6 +964,7 @@ function buildSteps(I: any): Step[] {
         await waitUntilVisible(page, ".addresses-cont, .address-card", 150000);
         await page.waitForTimeout(1500);
 
+        // IMPROVED CODE - with secondary verification for multiple matches
         const raw = ((ctx.actualStreetAddress || I.serviceAddress) as string).split(",")[0].trim();
         const sn = extractStreetNumber(raw);
 
@@ -921,24 +987,96 @@ function buildSteps(I: any): Step[] {
           console.log(`    ℹ️  No search input found — scanning all cards`);
         }
 
+        // Get all address cards with their full context
         let matchedIndex = -1;
         for (let attempt = 0; attempt < 3; attempt++) {
-          const cardTexts: string[] = await page.evaluate(() =>
-            Array.from(document.querySelectorAll(".address-card")).map(el => el.textContent || "")
+          // Get cards with more context (include all text content)
+          const cardsWithContext = await page.evaluate(() => {
+            const cards = Array.from(document.querySelectorAll(".address-card"));
+            return cards.map((card, idx) => ({
+              index: idx,
+              text: card.textContent || "",
+              hasScheduleBtn: !!card.querySelector('[data-cy="address-schedule-link"]'),
+              // Also capture any visible identifying info
+              locationName: card.querySelector('[data-cy="location-name"]')?.textContent || "",
+            }));
+          });
+          
+          console.log(`    ℹ️  ${cardsWithContext.length} card(s) on attempt ${attempt + 1}`);
+          
+          // Step 1: Find cards matching address substring
+          const matchingCards = cardsWithContext.filter(card => 
+            addressesMatch(card.text, raw)
           );
-          console.log(`    ℹ️  ${cardTexts.length} card(s) on attempt ${attempt + 1}`);
-
-          matchedIndex = cardTexts.findIndex(t => addressesMatch(t, raw));
-
-          if (matchedIndex === -1 && cardTexts.length === 1 && sn && cardTexts[0].includes(sn)) {
-            matchedIndex = 0;
+          
+          console.log(`    ℹ️  ${matchingCards.length} card(s) match address "${raw}"`);
+          
+          if (matchingCards.length === 0) {
+            // No match - try fallback logic
+            if (cardsWithContext.length === 1 && sn && cardsWithContext[0].text.includes(sn)) {
+              console.log(`    ℹ️  Only 1 card found with matching street number — assuming it's correct`);
+              matchedIndex = cardsWithContext[0].index;
+            } else if (cardsWithContext.length === 1) {
+              console.log(`    ℹ️  Only 1 card found — assuming it's the newly added address`);
+              matchedIndex = cardsWithContext[0].index;
+            }
+          } else if (matchingCards.length === 1) {
+            // Unique match - use it
+            matchedIndex = matchingCards[0].index;
+            console.log(`    ✅ Unique address match at card ${matchedIndex}`);
+          } else {
+            // Multiple matches - use secondary verification (name, phone, email)
+            console.log(`    ⚠️  Multiple address matches (${matchingCards.length}) — checking secondary fields...`);
+            
+            // Get the actual customer info from context
+            const customerFirstName = I.firstName;
+            const customerLastName = I.lastName;
+            const customerPhone = I.phone;
+            const customerEmail = I.email;
+            
+            // Find the card that matches secondary criteria
+            let bestMatch = null;
+            let matchReason = "";
+            
+            for (const card of matchingCards) {
+              const cardText = card.text.toLowerCase();
+              
+              // Check name match
+              const hasFirstName = customerFirstName !== "Not Provided" && cardText.includes(customerFirstName.toLowerCase());
+              const hasLastName = customerLastName !== "Not Provided" && cardText.includes(customerLastName.toLowerCase());
+              const nameMatches = hasFirstName && hasLastName;
+              
+              // Check phone match
+              const phoneMatches = customerPhone !== "Not Provided" && textContainsPhone(cardText, customerPhone);
+              
+              // Check email match
+              const emailMatches = customerEmail !== "Not Provided" && cardText.includes(customerEmail.toLowerCase());
+              
+              if (nameMatches) {
+                bestMatch = card;
+                matchReason = "name";
+                break;
+              } else if (phoneMatches) {
+                bestMatch = card;
+                matchReason = "phone";
+                break;
+              } else if (emailMatches) {
+                bestMatch = card;
+                matchReason = "email";
+                break;
+              }
+            }
+            
+            if (bestMatch) {
+              matchedIndex = bestMatch.index;
+              console.log(`    ✅ Matched by ${matchReason} at card ${matchedIndex}`);
+            } else {
+              // No secondary match - use the first matching card (better than failing)
+              matchedIndex = matchingCards[0].index;
+              console.log(`    ⚠️  No secondary match — using first matching card (index ${matchedIndex})`);
+            }
           }
-
-          if (matchedIndex === -1 && cardTexts.length === 1) {
-            console.log(`    ℹ️  Only 1 card found — assuming it's the newly added address`);
-            matchedIndex = 0;
-          }
-
+          
           if (matchedIndex !== -1) break;
           await page.waitForTimeout(1500);
         }
