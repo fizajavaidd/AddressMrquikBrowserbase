@@ -276,7 +276,7 @@ function buildSteps(I: any): Step[] {
     {
       name: "Navigate to login page",
       async run(page) {
-        await page.goto("https://misterroofrepair.sera.tech/admins/login", { waitUntil: "domcontentloaded", timeout: 300000 });
+        await page.goto("https://misterquik.sera.tech/admins/login", { waitUntil: "domcontentloaded", timeout: 300000 });
         await waitUntilVisible(page, 'input[type="email"], input[name="email"]', 150000);
       },
     },
@@ -342,7 +342,7 @@ function buildSteps(I: any): Step[] {
     {
       name: "Navigate to customers page",
       async run(page) {
-        await page.goto("https://misterroofrepair.sera.tech/customers", { waitUntil: "domcontentloaded", timeout: 300000 });
+        await page.goto("https://misterquik.sera.tech/customers", { waitUntil: "domcontentloaded", timeout: 300000 });
         await waitUntilVisible(page, "table, .customers-list", 150000);
       },
     },
@@ -398,7 +398,7 @@ function buildSteps(I: any): Step[] {
           const idMatch = text.match(/^(\d+)/);
           if (idMatch) {
             try {
-              await page.goto(`https://misterroofrepair.sera.tech/customers/${idMatch[1]}`, {
+              await page.goto(`https://misterquik.sera.tech/customers/${idMatch[1]}`, {
                 waitUntil: "domcontentloaded",
                 timeout: 100000,
               });
@@ -456,7 +456,7 @@ function buildSteps(I: any): Step[] {
             const idMatch = text.match(/^(\d+)/);
             if (idMatch) {
               try {
-                await page.goto(`https://misterroofrepair.sera.tech/customers/${idMatch[1]}`, {
+                await page.goto(`https://misterquik.sera.tech/customers/${idMatch[1]}`, {
                   waitUntil: "domcontentloaded",
                   timeout: 600000,
                 });
@@ -509,7 +509,7 @@ function buildSteps(I: any): Step[] {
             const idMatch = text.match(/^(\d+)/);
             if (idMatch) {
               try {
-                await page.goto(`https://misterroofrepair.sera.tech/customers/${idMatch[1]}`, {
+                await page.goto(`https://misterquik.sera.tech/customers/${idMatch[1]}`, {
                   waitUntil: "domcontentloaded",
                   timeout: 600000,
                 });
@@ -564,7 +564,7 @@ function buildSteps(I: any): Step[] {
       name: "Navigate to new customer page",
       skipIf: (_, c) => alreadyFound(c),
       async run(page) {
-        await page.goto("https://misterroofrepair.sera.tech/customers/new", {
+        await page.goto("https://misterquik.sera.tech/customers/new", {
           waitUntil: "domcontentloaded",
           timeout: 300000,
         });
