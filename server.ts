@@ -103,6 +103,139 @@ app.post("/book-roofing", authCheck, async (req, res) => {
   }
 });
 
+// NEW: Async booking endpoint (returns taskId immediately)
+app.post("/book-async", authCheck, async (req, res) => {
+  const taskId = crypto.randomUUID();
+  
+  console.log(`\n📥 Async booking request at ${new Date().toISOString()}`);
+  console.log(`   Customer: ${req.body.firstName} ${req.body.lastName}`);
+  console.log(`   Task ID: ${taskId}`);
+  
+  // Store task as running
+  tasks[taskId] = {
+    status: "RUNNING",
+    result: "Processing booking...",
+    jobsProcessed: 0,
+    quotesDeclined: 0,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    extraData: {
+      customerName: `${req.body.firstName} ${req.body.lastName}`,
+      address: req.body.serviceAddress,
+    },
+  };
+  
+  // Respond immediately with taskId
+  res.json({
+    data: {
+      status: "STARTED",
+      taskId,
+      message: `Booking task started. Poll GET /task/${taskId} for result.`,
+    },
+  });
+  
+  // Run booking in background (don't await)
+  runRoofingBookingTask(req.body)
+    .then((result) => {
+      console.log(`📤 Booking task ${taskId} done: success=${result.success}`);
+      tasks[taskId] = {
+        status: result.success ? "COMPLETED" : "FAILED",
+        result: result.message,
+        jobsProcessed: 0,
+        quotesDeclined: 0,
+        startedAt: tasks[taskId].startedAt,
+        completedAt: new Date().toISOString(),
+        extraData: {
+          ...tasks[taskId].extraData,
+          sessionUrl: result.sessionUrl,
+          stepsRun: result.stepsRun,
+          totalSteps: result.totalSteps,
+          elapsedMinutes: result.elapsedMinutes,
+          matchedBy: result.context?.matchedBy,
+          selectedTimeSlot: result.context?.selectedTimeSlot,
+          completionMessage: result.context?.completionMessage,
+        },
+      };
+    })
+    .catch((error) => {
+      console.error(`❌ Booking task ${taskId} failed: ${error.message}`);
+      tasks[taskId] = {
+        status: "FAILED",
+        result: `Error: ${error.message}`,
+        jobsProcessed: 0,
+        quotesDeclined: 0,
+        startedAt: tasks[taskId].startedAt,
+        completedAt: new Date().toISOString(),
+        extraData: tasks[taskId].extraData,
+      };
+    });
+});
+
+// NEW: Async roofing booking endpoint
+app.post("/book-roofing-async", authCheck, async (req, res) => {
+  const taskId = crypto.randomUUID();
+  
+  console.log(`\n📥 Async roofing booking request at ${new Date().toISOString()}`);
+  console.log(`   Customer: ${req.body.firstName} ${req.body.lastName}`);
+  console.log(`   Task ID: ${taskId}`);
+  
+  tasks[taskId] = {
+    status: "RUNNING",
+    result: "Processing roofing booking...",
+    jobsProcessed: 0,
+    quotesDeclined: 0,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    extraData: {
+      customerName: `${req.body.firstName} ${req.body.lastName}`,
+      address: req.body.serviceAddress,
+    },
+  };
+  
+  res.json({
+    data: {
+      status: "STARTED",
+      taskId,
+      message: `Roofing booking task started. Poll GET /task/${taskId} for result.`,
+    },
+  });
+  
+  runRoofingBookingTask(req.body)
+    .then((result) => {
+      console.log(`📤 Roofing task ${taskId} done: success=${result.success}`);
+      tasks[taskId] = {
+        status: result.success ? "COMPLETED" : "FAILED",
+        result: result.message,
+        jobsProcessed: 0,
+        quotesDeclined: 0,
+        startedAt: tasks[taskId].startedAt,
+        completedAt: new Date().toISOString(),
+        extraData: {
+          ...tasks[taskId].extraData,
+          sessionUrl: result.sessionUrl,
+          stepsRun: result.stepsRun,
+          totalSteps: result.totalSteps,
+          elapsedMinutes: result.elapsedMinutes,
+          matchedBy: result.context?.matchedBy,
+          selectedTimeSlot: result.context?.selectedTimeSlot,
+          completionMessage: result.context?.completionMessage,
+        },
+      };
+    })
+    .catch((error) => {
+      console.error(`❌ Roofing task ${taskId} failed: ${error.message}`);
+      tasks[taskId] = {
+        status: "FAILED",
+        result: `Error: ${error.message}`,
+        jobsProcessed: 0,
+        quotesDeclined: 0,
+        startedAt: tasks[taskId].startedAt,
+        completedAt: new Date().toISOString(),
+        extraData: tasks[taskId].extraData,
+      };
+    });
+});
+
 // Appointment page count endpoint (sync)
 app.post("/appointment-pages", authCheck, async (req, res) => {
   const dateFilter = req.body.dateFilter;
