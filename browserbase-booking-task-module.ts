@@ -140,11 +140,11 @@ function generateAddressVariations(address: string): string[] {
   
   // Also generate variations with and without punctuation
   const finalVariations = new Set<string>();
-  for (const var of variations) {
-    finalVariations.add(var);
-    finalVariations.add(var.replace(/\./g, '')); // Remove periods
-    finalVariations.add(var.replace(/\s+/g, ' ').trim()); // Normalize spaces
-  }
+  for (const variation of variations) {
+    finalVariations.add(variation);
+    finalVariations.add(variation.replace(/\./g, ''));
+    finalVariations.add(variation.replace(/\s+/g, ' ').trim());
+}
   
   return Array.from(finalVariations);
 }
