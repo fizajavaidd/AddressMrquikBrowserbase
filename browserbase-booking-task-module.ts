@@ -52,6 +52,128 @@ function extractStreetNumber(address: string): string {
 }
 
 // =============================================================================
+// HELPERS - Address Variations
+// =============================================================================
+
+/**
+ * Generates all possible variations of an address (full words and abbreviations)
+ * For example: "6960 Hillsdale Court" → ["6960 Hillsdale Court", "6960 Hillsdale Ct"]
+ *              "6960 Hillsdale Ct" → ["6960 Hillsdale Ct", "6960 Hillsdale Court"]
+ */
+function generateAddressVariations(address: string): string[] {
+  if (!address) return [address];
+  
+  const variations = new Set<string>();
+  variations.add(address);
+  
+  // Common street abbreviations (full word -> abbreviation)
+  const abbreviationMap: Record<string, string[]> = {
+    "court": ["ct", "crt"],
+    "ct": ["court"],
+    "circle": ["cir", "crcl"],
+    "cir": ["circle"],
+    "drive": ["dr"],
+    "dr": ["drive"],
+    "lane": ["ln"],
+    "ln": ["lane"],
+    "road": ["rd"],
+    "rd": ["road"],
+    "street": ["st"],
+    "st": ["street"],
+    "avenue": ["ave", "av"],
+    "ave": ["avenue"],
+    "av": ["avenue"],
+    "boulevard": ["blvd", "blvd"],
+    "blvd": ["boulevard"],
+    "place": ["pl"],
+    "pl": ["place"],
+    "parkway": ["pkwy", "pky"],
+    "pkwy": ["parkway"],
+    "terrace": ["ter"],
+    "ter": ["terrace"],
+    "trail": ["trl"],
+    "trl": ["trail"],
+    "north": ["n"],
+    "n": ["north"],
+    "south": ["s"],
+    "s": ["south"],
+    "highway": ["hwy"],
+    "hwy": ["highway"],
+    "east": ["e"],
+    "e": ["east"],
+    "west": ["w"],
+    "w": ["west"],
+    "northeast": ["ne"],
+    "ne": ["northeast"],
+    "northwest": ["nw"],
+    "nw": ["northwest"],
+    "southeast": ["se"],
+    "se": ["southeast"],
+    "southwest": ["sw"],
+    "sw": ["southwest"],
+  };
+  
+  const lowerAddress = address.toLowerCase();
+  
+  // For each abbreviation mapping, check if address contains it and generate variation
+  for (const [word, abbreviations] of Object.entries(abbreviationMap)) {
+    // If address contains the full word, replace with each abbreviation
+    if (lowerAddress.includes(word)) {
+      for (const abbr of abbreviations) {
+        const variation = address.replace(new RegExp(`\\b${word}\\b`, 'gi'), abbr);
+        variations.add(variation);
+        // Also try lowercase version
+        variations.add(variation.toLowerCase());
+      }
+    }
+    
+    // If address contains any abbreviation, replace with full word
+    for (const abbr of abbreviations) {
+      if (lowerAddress.includes(abbr)) {
+        const variation = address.replace(new RegExp(`\\b${abbr}\\b`, 'gi'), word);
+        variations.add(variation);
+        // Also try lowercase version
+        variations.add(variation.toLowerCase());
+      }
+    }
+  }
+  
+  // Also generate variations with and without punctuation
+  const finalVariations = new Set<string>();
+  for (const var of variations) {
+    finalVariations.add(var);
+    finalVariations.add(var.replace(/\./g, '')); // Remove periods
+    finalVariations.add(var.replace(/\s+/g, ' ').trim()); // Normalize spaces
+  }
+  
+  return Array.from(finalVariations);
+}
+
+/**
+ * Checks if two addresses match by trying multiple variations
+ */
+function addressesMatchWithVariations(address1: string, address2: string): boolean {
+  // First try direct match
+  if (addressesMatch(address1, address2)) return true;
+  
+  // Generate variations of both addresses
+  const variations1 = generateAddressVariations(address1);
+  const variations2 = generateAddressVariations(address2);
+  
+  // Check if any variation of address1 matches any variation of address2
+  for (const v1 of variations1) {
+    for (const v2 of variations2) {
+      if (addressesMatch(v1, v2)) {
+        console.log(`    ℹ️  Address match found via variation: "${v1}" ↔ "${v2}"`);
+        return true;
+      }
+    }
+  }
+  
+  return false;
+}
+
+// =============================================================================
 // HELPERS — Phone normalization
 // =============================================================================
 
@@ -442,59 +564,74 @@ function buildSteps(I: any): Step[] {
   name: "Check customer found by address",
   skipIf: (_, c) => alreadyFound(c),
   async run(page, ctx) {
-    const rows = page.locator("table tbody tr");
-    const count = await rows.count();
-    console.log(`    ℹ️  Address search: ${count} rows`);
-    
     const addrPart = I.serviceAddress.split(",")[0].trim();
-    let foundAddressOnlyMatch = false;
+    const addrSel = await firstVisible(page, [
+      'th.address-field input',
+      'th[class*="address"] input',
+    ], 3000);
     
-    for (let i = 0; i < count; i++) {
-      const text = await rows.nth(i).textContent();
-      const matchesAddress = addressesMatch(text, addrPart);
-      const matchesName = text.includes(I.firstName) && text.includes(I.lastName);
-      const matchesEmail = I.email !== "Not Provided" && text.includes(I.email);
-      const matchesPhone = textContainsPhone(text, I.phone);
-
-      // Case 1: Address matches AND at least one other field matches → USE EXISTING CUSTOMER
-      if (matchesAddress && (matchesName || matchesEmail || matchesPhone)) {
-        console.log(`    ✅ Customer matched by address + ${matchesName ? "name" : matchesEmail ? "email" : "phone"}`);
-        const idMatch = text.match(/^(\d+)/);
-        if (idMatch) {
-          try {
-            await page.goto(`https://misterquik.sera.tech/customers/${idMatch[1]}`, {
-              waitUntil: "domcontentloaded",
-              timeout: 600000,
-            });
-          } catch {
-            console.log(`    ℹ️  goto timed out — waiting for page to settle`);
-            await page.waitForTimeout(5000);
-          }
-        } else {
-          await clickNth(page, "table tbody tr a", i);
-        }
-        await page.waitForTimeout(5000);
-        ctx.customerFound = true;
-        ctx.matchedBy = "address";
-        return;
+    // Generate all variations of the address
+    const addressVariations = generateAddressVariations(addrPart);
+    console.log(`    ℹ️  Generated ${addressVariations.length} address variation(s):`);
+    addressVariations.slice(0, 5).forEach(v => console.log(`       - "${v}"`));
+    if (addressVariations.length > 5) {
+      console.log(`       ... and ${addressVariations.length - 5} more`);
+    }
+    
+    let customerFound = false;
+    
+    // Try each variation
+    for (const variation of addressVariations) {
+      if (customerFound) break;
+      
+      console.log(`    ℹ️  Searching by address: "${variation}"`);
+      
+      if (addrSel) {
+        await page.locator(addrSel).first().fill(variation);
+        await page.waitForTimeout(5000); // Wait for results
       }
       
-      // Case 2: Address matches but NOTHING else matches → DIFFERENT PERSON AT SAME ADDRESS
-      if (matchesAddress && !matchesName && !matchesEmail && !matchesPhone) {
-        console.log(`    ⚠️  Address matches but name/email/phone don't match - DIFFERENT PERSON`);
-        console.log(`    ℹ️  Will create NEW customer for ${I.firstName} ${I.lastName}`);
-        foundAddressOnlyMatch = true;
-        // Continue checking other rows (there might be a full match later)
+      const rows = page.locator("table tbody tr");
+      const count = await rows.count();
+      console.log(`    ℹ️  Address search (${variation}): ${count} rows`);
+      
+      for (let i = 0; i < count; i++) {
+        const text = await rows.nth(i).textContent();
+        const matchesName = text.includes(I.firstName) && text.includes(I.lastName);
+        const matchesEmail = I.email !== "Not Provided" && text.includes(I.email);
+        const matchesPhone = textContainsPhone(text, I.phone);
+        
+        // Use the enhanced matching with variations
+       const matchesAddress = addressesMatchWithVariations(text, I.serviceAddress.split(",")[0].trim());
+        
+        if (matchesAddress && (matchesName || matchesEmail || matchesPhone)) {
+          console.log(`    ✅ Customer matched by address (${variation}) + ${matchesName ? "name" : matchesEmail ? "email" : "phone"}`);
+          const idMatch = text.match(/^(\d+)/);
+          if (idMatch) {
+            try {
+              await page.goto(`https://misterquik.sera.tech/customers/${idMatch[1]}`, {
+                waitUntil: "domcontentloaded",
+                timeout: 600000,
+              });
+            } catch {
+              console.log(`    ℹ️  goto timed out — waiting for page to settle`);
+              await page.waitForTimeout(5000);
+            }
+          } else {
+            await clickNth(page, "table tbody tr a", i);
+          }
+          await page.waitForTimeout(5000);
+          ctx.customerFound = true;
+          ctx.matchedBy = "address";
+          customerFound = true;
+          return;
+        }
       }
     }
     
-    // If we found address-only matches but no full matches, create new customer
-    if (foundAddressOnlyMatch) {
-      console.log(`    ℹ️  No matching customer found - creating new customer`);
+    if (!customerFound) {
       ctx.customerFound = false;
-    } else {
-      console.log(`    ℹ️  No customer found by address`);
-      ctx.customerFound = false;
+      console.log(`    ℹ️  No customer found by address (tried ${addressVariations.length} variations)`);
     }
   },
 },
@@ -857,8 +994,6 @@ function buildSteps(I: any): Step[] {
             console.log(`    ⚠️  No secondary match — using first matching card (index ${matchedIndex})`);
           }
         }
-
-        ctx.addressFound = true;
 
         ctx.addressFound = true;
 
