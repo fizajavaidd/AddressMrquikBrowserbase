@@ -439,43 +439,65 @@ function buildSteps(I: any): Step[] {
       },
     },
     {
-      name: "Check customer found by address",
-      skipIf: (_, c) => alreadyFound(c),
-      async run(page, ctx) {
-        const rows = page.locator("table tbody tr");
-        const count = await rows.count();
-        console.log(`    ℹ️  Address search: ${count} rows`);
-        for (let i = 0; i < count; i++) {
-          const text = await rows.nth(i).textContent();
-          const matchesName = text.includes(I.firstName) && text.includes(I.lastName);
-          const matchesEmail = I.email !== "Not Provided" && text.includes(I.email);
-          const matchesPhone = textContainsPhone(text, I.phone);
+  name: "Check customer found by address",
+  skipIf: (_, c) => alreadyFound(c),
+  async run(page, ctx) {
+    const rows = page.locator("table tbody tr");
+    const count = await rows.count();
+    console.log(`    ℹ️  Address search: ${count} rows`);
+    
+    const addrPart = I.serviceAddress.split(",")[0].trim();
+    let foundAddressOnlyMatch = false;
+    
+    for (let i = 0; i < count; i++) {
+      const text = await rows.nth(i).textContent();
+      const matchesAddress = addressesMatch(text, addrPart);
+      const matchesName = text.includes(I.firstName) && text.includes(I.lastName);
+      const matchesEmail = I.email !== "Not Provided" && text.includes(I.email);
+      const matchesPhone = textContainsPhone(text, I.phone);
 
-          if (matchesName || matchesEmail || matchesPhone) {
-            console.log(`    ✅ Customer matched by address + ${matchesName ? "name" : matchesEmail ? "email" : "phone"}`);
-            const idMatch = text.match(/^(\d+)/);
-            if (idMatch) {
-              try {
-                await page.goto(`https://misterquik.sera.tech/customers/${idMatch[1]}`, {
-                  waitUntil: "domcontentloaded",
-                  timeout: 600000,
-                });
-              } catch {
-                console.log(`    ℹ️  goto timed out — waiting for page to settle`);
-                await page.waitForTimeout(5000);
-              }
-            } else {
-              await clickNth(page, "table tbody tr a", i);
-            }
+      // Case 1: Address matches AND at least one other field matches → USE EXISTING CUSTOMER
+      if (matchesAddress && (matchesName || matchesEmail || matchesPhone)) {
+        console.log(`    ✅ Customer matched by address + ${matchesName ? "name" : matchesEmail ? "email" : "phone"}`);
+        const idMatch = text.match(/^(\d+)/);
+        if (idMatch) {
+          try {
+            await page.goto(`https://misterquik.sera.tech/customers/${idMatch[1]}`, {
+              waitUntil: "domcontentloaded",
+              timeout: 600000,
+            });
+          } catch {
+            console.log(`    ℹ️  goto timed out — waiting for page to settle`);
             await page.waitForTimeout(5000);
-            ctx.customerFound = true;
-            ctx.matchedBy = "address";
-            return;
           }
+        } else {
+          await clickNth(page, "table tbody tr a", i);
         }
-        ctx.customerFound = false;
-      },
-    },
+        await page.waitForTimeout(5000);
+        ctx.customerFound = true;
+        ctx.matchedBy = "address";
+        return;
+      }
+      
+      // Case 2: Address matches but NOTHING else matches → DIFFERENT PERSON AT SAME ADDRESS
+      if (matchesAddress && !matchesName && !matchesEmail && !matchesPhone) {
+        console.log(`    ⚠️  Address matches but name/email/phone don't match - DIFFERENT PERSON`);
+        console.log(`    ℹ️  Will create NEW customer for ${I.firstName} ${I.lastName}`);
+        foundAddressOnlyMatch = true;
+        // Continue checking other rows (there might be a full match later)
+      }
+    }
+    
+    // If we found address-only matches but no full matches, create new customer
+    if (foundAddressOnlyMatch) {
+      console.log(`    ℹ️  No matching customer found - creating new customer`);
+      ctx.customerFound = false;
+    } else {
+      console.log(`    ℹ️  No customer found by address`);
+      ctx.customerFound = false;
+    }
+  },
+},
 
     // --- FALLBACK SEARCH 2: Email ---
     {
