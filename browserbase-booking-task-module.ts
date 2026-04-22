@@ -138,13 +138,15 @@ function generateAddressVariations(address: string): string[] {
     }
   }
   
-  // Also generate variations with and without punctuation
-  const finalVariations = new Set<string>();
+   const finalVariations = new Set<string>();
   for (const variation of variations) {
     finalVariations.add(variation);
-    finalVariations.add(variation.replace(/\./g, ''));
-    finalVariations.add(variation.replace(/\s+/g, ' ').trim());
-}
+    finalVariations.add(variation.replace(/\./g, ''));   // Remove periods
+    finalVariations.add(variation.replace(/'/g, ''));    // Remove apostrophes (ADD THIS)
+    finalVariations.add(variation.replace(/\./g, '').replace(/'/g, '')); // Both
+    finalVariations.add(variation.replace(/\s+/g, ' ').trim()); // Normalize spaces
+    finalVariations.add(variation.toLowerCase()); // Lowercase version
+  }
   
   return Array.from(finalVariations);
 }
