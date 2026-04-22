@@ -111,6 +111,18 @@ function generateAddressVariations(address: string): string[] {
     "se": ["southeast"],
     "southwest": ["sw"],
     "sw": ["southwest"],
+    // Unit/Apartment mappings (ADD THIS)
+  "unit": ["apt", "apartment", "ste", "suite", "#", "number"],
+  "apt": ["unit", "apartment", "ste", "#"],
+  "ste": ["unit", "suite", "apt", "#"],
+  "#": ["unit", "apt", "ste", "number"],
+  "apartment": ["apt", "unit"],
+  "suite": ["ste", "unit"],
+  
+  // Plex mappings (ADD THIS)
+  "plex": ["apt", "unit"],
+    "longford": ["long ford", "long-ford"],
+"long ford": ["longford"],
   };
   
   const lowerAddress = address.toLowerCase();
@@ -138,15 +150,21 @@ function generateAddressVariations(address: string): string[] {
     }
   }
   
-   const finalVariations = new Set<string>();
-  for (const variation of variations) {
-    finalVariations.add(variation);
-    finalVariations.add(variation.replace(/\./g, ''));   // Remove periods
-    finalVariations.add(variation.replace(/'/g, ''));    // Remove apostrophes (ADD THIS)
-    finalVariations.add(variation.replace(/\./g, '').replace(/'/g, '')); // Both
-    finalVariations.add(variation.replace(/\s+/g, ' ').trim()); // Normalize spaces
-    finalVariations.add(variation.toLowerCase()); // Lowercase version
-  }
+  const finalVariations = new Set<string>();
+for (const variation of variations) {
+  finalVariations.add(variation);
+  finalVariations.add(variation.replace(/\./g, ''));      // Remove periods
+  finalVariations.add(variation.replace(/'/g, ''));       // Remove apostrophes
+  finalVariations.add(variation.replace(/[()]/g, ''));    // Remove parentheses (ADD THIS)
+  finalVariations.add(variation.replace(/[?]/g, ''));     // Remove question marks (ADD THIS)
+  finalVariations.add(variation.replace(/[>]/g, ''));     // Remove greater than (ADD THIS)
+  finalVariations.add(variation.replace(/[<]/g, ''));     // Remove less than (ADD THIS)
+  finalVariations.add(variation.replace(/[#]/g, ''));     // Remove hash (ADD THIS)
+  finalVariations.add(variation.replace(/[&]/g, 'and'));  // Replace & with and (ADD THIS)
+  finalVariations.add(variation.replace(/[^a-zA-Z0-9\s]/g, '')); // Remove ALL special chars (OPTIONAL)
+  finalVariations.add(variation.replace(/\s+/g, ' ').trim());
+  finalVariations.add(variation.toLowerCase());
+}
   
   return Array.from(finalVariations);
 }
