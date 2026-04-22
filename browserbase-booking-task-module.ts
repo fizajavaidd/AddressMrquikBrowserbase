@@ -173,21 +173,36 @@ for (const variation of variations) {
  * Checks if two addresses match by trying multiple variations
  */
 function addressesMatchWithVariations(address1: string, address2: string): boolean {
-  // First try direct match
+  // First try direct match (highest confidence)
   if (addressesMatch(address1, address2)) return true;
   
-  // Generate variations of both addresses
+  // Generate variations
   const variations1 = generateAddressVariations(address1);
   const variations2 = generateAddressVariations(address2);
   
-  // Check if any variation of address1 matches any variation of address2
+  // First pass: Prefer matches that preserve street type
   for (const v1 of variations1) {
     for (const v2 of variations2) {
+      // Check if both have street type (not the "without" version)
+      const hasStreetType1 = /\b(dr|drive|st|street|ave|avenue|rd|road|ln|lane|ct|court|blvd|boulevard)\b/i.test(v1);
+      const hasStreetType2 = /\b(dr|drive|st|street|ave|avenue|rd|road|ln|lane|ct|court|blvd|boulevard)\b/i.test(v2);
+      
       if (addressesMatch(v1, v2)) {
-        console.log(`    ℹ️  Address match found via variation: "${v1}" ↔ "${v2}"`);
-        return true;
+        // If both have street types, it's a confident match
+        if (hasStreetType1 && hasStreetType2) {
+          console.log(`    ℹ️  Address match with street types: "${v1}" ↔ "${v2}"`);
+          return true;
+        }
+        // Store as potential match (lower confidence)
+        if (!bestMatch) bestMatch = { v1, v2 };
       }
     }
+  }
+  
+  // Second pass: Accept matches where one is missing street type
+  if (bestMatch) {
+    console.log(`    ℹ️  Address match (street type missing): "${bestMatch.v1}" ↔ "${bestMatch.v2}"`);
+    return true;
   }
   
   return false;
